@@ -14,11 +14,12 @@
     <PackageReference Include="Aspire.Hosting.AppHost" Version="9.4.1" />
     <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="9.4.0" />
     <PackageReference Include="Aspire.Hosting.Redis" Version="9.4.0" />
-    <ProjectReference Include="..\..\src\Asynkron.OtelReceiver\Asynkron.OtelReceiver.csproj" />
+    <ProjectReference Include="..\..\..\src\Asynkron.OtelReceiver\Asynkron.OtelReceiver.csproj" />
     <ProjectReference Include="..\AspireShop.BasketService\AspireShop.BasketService.csproj" />
     <ProjectReference Include="..\AspireShop.CatalogDbManager\AspireShop.CatalogDbManager.csproj" />
     <ProjectReference Include="..\AspireShop.CatalogService\AspireShop.CatalogService.csproj" />
     <ProjectReference Include="..\AspireShop.Frontend\AspireShop.Frontend.csproj" />
+    <ProjectReference Include="..\AspireShop.LoadGenerator\AspireShop.LoadGenerator.csproj" />
   </ItemGroup>
 
 </Project>

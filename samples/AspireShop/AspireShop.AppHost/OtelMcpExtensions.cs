@@ -1,6 +1,7 @@
 using System;
 using Aspire.Hosting;
 using Aspire.Hosting.ApplicationModel;
+using Aspire.Hosting.Lifecycle;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AspireShop.AppHost;
@@ -28,7 +29,6 @@ internal static class OtelMcpExtensions
             {
                 endpoint.Port = 4317;
                 endpoint.UriScheme = "http";
-                endpoint.Protocol = EndpointProtocol.Http2;
             })
             // Force Kestrel to listen on the canonical OTLP gRPC port so Aspire services
             // can discover it via the generated endpoint reference above.
