@@ -248,10 +248,13 @@ public class OtelGrpcIngestionTests
             "log record to be persisted");
 
         var storedLog = await _factory.ExecuteDbContextAsync(context =>
-            context.Logs.SingleAsync(log => log.RawBody == "integration log"));
+            context.Logs
+                .Include(log => log.Attributes)
+                .SingleAsync(log => log.RawBody == "integration log"));
         Assert.Equal(Convert.ToHexString(traceIdBytes), storedLog.TraceId);
         Assert.Equal("integration log", storedLog.RawBody);
-        Assert.Contains("env:test", storedLog.AttributeMap);
+        Assert.Contains(storedLog.Attributes,
+            attribute => attribute.Key == "env" && attribute.Value == "test" && attribute.Kind == LogAttributeKind.Record);
     }
 
     [Fact]

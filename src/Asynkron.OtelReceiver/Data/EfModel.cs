@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using Microsoft.EntityFrameworkCore;
@@ -21,6 +22,8 @@ public class OtelReceiverContext(DbContextOptions<OtelReceiverContext> options) 
     public DbSet<SnapshotEntity> Snapshots { get; set; }
 
     public DbSet<MetricEntity> Metrics { get; set; }
+
+    public DbSet<LogAttributeEntity> LogAttributes { get; set; }
 }
 
 [Index(nameof(TraceId))]
@@ -43,11 +46,32 @@ public class LogEntity
 
     public byte[] Proto { get; set; }
 
-    //Key + ":" + Value... query checks for existence of entire string
-    public string[] ResourceMap { get; set; }
+    public ICollection<LogAttributeEntity> Attributes { get; set; } = new List<LogAttributeEntity>();
+}
 
-    //Key + ":" + Value... query checks for existence of entire string
-    public string[] AttributeMap { get; set; }
+[Index(nameof(LogId))]
+[Index(nameof(Key), nameof(Value), nameof(Kind))]
+public class LogAttributeEntity
+{
+    [Key]
+    [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
+    public int Id { get; set; }
+
+    public int LogId { get; set; }
+
+    public string Key { get; set; }
+
+    public string Value { get; set; }
+
+    public LogAttributeKind Kind { get; set; }
+
+    public LogEntity Log { get; set; }
+}
+
+public enum LogAttributeKind : byte
+{
+    Record = 0,
+    Resource = 1
 }
 
 [Index(nameof(SpanId))]

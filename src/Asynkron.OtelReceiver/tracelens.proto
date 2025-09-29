@@ -38,6 +38,20 @@ message SearchTracesRequest {
   uint64 end_time = 6;
   int32 limit = 7;
   string log_search = 8;
+  repeated LogAttributePredicate log_attributes = 9;
+}
+
+enum LogAttributeSource {
+  LOG_ATTRIBUTE_SOURCE_UNSPECIFIED = 0;
+  LOG_ATTRIBUTE_SOURCE_RECORD = 1;
+  LOG_ATTRIBUTE_SOURCE_RESOURCE = 2;
+  LOG_ATTRIBUTE_SOURCE_ANY = 3;
+}
+
+message LogAttributePredicate {
+  string key = 1;
+  string value = 2;
+  LogAttributeSource source = 3;
 }
 
 message SpanOverview {

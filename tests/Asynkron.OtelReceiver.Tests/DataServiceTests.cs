@@ -202,6 +202,186 @@ public class DataServiceTests
         Assert.Equal("Service", metadata.ComponentKind);
     }
 
+    [Fact]
+    public async Task SearchTraces_FiltersLogsByAttributes()
+    {
+        using var channel = _factory.CreateGrpcChannel();
+        var traceClient = new TraceService.TraceServiceClient(channel);
+        var logsClient = new LogsService.LogsServiceClient(channel);
+        var dataClient = new DataService.DataServiceClient(channel);
+
+        var traceIdBytes = Enumerable.Range(50, 16).Select(i => (byte)i).ToArray();
+        var spanIdBytes = Enumerable.Range(80, 8).Select(i => (byte)i).ToArray();
+        var traceIdHex = Convert.ToHexString(traceIdBytes);
+
+        await traceClient.ExportAsync(new ExportTraceServiceRequest
+        {
+            ResourceSpans =
+            {
+                new ResourceSpans
+                {
+                    Resource = new Resource
+                    {
+                        Attributes =
+                        {
+                            new KeyValue
+                            {
+                                Key = "service.name",
+                                Value = new AnyValue { StringValue = "log-attribute-service" }
+                            }
+                        }
+                    },
+                    ScopeSpans =
+                    {
+                        new ScopeSpans
+                        {
+                            Spans =
+                            {
+                                new Span
+                                {
+                                    TraceId = ByteString.CopyFrom(traceIdBytes),
+                                    SpanId = ByteString.CopyFrom(spanIdBytes),
+                                    Name = "log-operation",
+                                    StartTimeUnixNano = 10_000,
+                                    EndTimeUnixNano = 20_000
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        await logsClient.ExportAsync(new ExportLogsServiceRequest
+        {
+            ResourceLogs =
+            {
+                new ResourceLogs
+                {
+                    Resource = new Resource
+                    {
+                        Attributes =
+                        {
+                            new KeyValue
+                            {
+                                Key = "service.name",
+                                Value = new AnyValue { StringValue = "log-attribute-service" }
+                            },
+                            new KeyValue
+                            {
+                                Key = "cloud.region",
+                                Value = new AnyValue { StringValue = "west" }
+                            }
+                        }
+                    },
+                    ScopeLogs =
+                    {
+                        new ScopeLogs
+                        {
+                            LogRecords =
+                            {
+                                new LogRecord
+                                {
+                                    TraceId = ByteString.CopyFrom(traceIdBytes),
+                                    SpanId = ByteString.CopyFrom(spanIdBytes),
+                                    TimeUnixNano = 12_000,
+                                    Body = new AnyValue { StringValue = "matching log" },
+                                    Attributes =
+                                    {
+                                        new KeyValue
+                                        {
+                                            Key = "event.domain",
+                                            Value = new AnyValue { StringValue = "orders" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                new ResourceLogs
+                {
+                    Resource = new Resource
+                    {
+                        Attributes =
+                        {
+                            new KeyValue
+                            {
+                                Key = "service.name",
+                                Value = new AnyValue { StringValue = "log-attribute-service" }
+                            },
+                            new KeyValue
+                            {
+                                Key = "cloud.region",
+                                Value = new AnyValue { StringValue = "east" }
+                            }
+                        }
+                    },
+                    ScopeLogs =
+                    {
+                        new ScopeLogs
+                        {
+                            LogRecords =
+                            {
+                                new LogRecord
+                                {
+                                    TraceId = ByteString.CopyFrom(traceIdBytes),
+                                    SpanId = ByteString.CopyFrom(spanIdBytes),
+                                    TimeUnixNano = 13_000,
+                                    Body = new AnyValue { StringValue = "non matching log" },
+                                    Attributes =
+                                    {
+                                        new KeyValue
+                                        {
+                                            Key = "event.domain",
+                                            Value = new AnyValue { StringValue = "payments" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(context =>
+                context.Spans.AnyAsync(span => span.TraceId == traceIdHex)),
+            "trace to be queryable");
+
+        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(async context =>
+                (await context.Logs.CountAsync(log => log.TraceId == traceIdHex)) == 2),
+            "logs to be queryable");
+
+        var response = await dataClient.SearchTracesAsync(new SearchTracesRequest
+        {
+            ServiceName = "log-attribute-service",
+            Limit = 5,
+            LogSearch = "matching",
+            LogAttributes =
+            {
+                new LogAttributePredicate
+                {
+                    Key = "event.domain",
+                    Value = "orders",
+                    Source = LogAttributeSource.Record
+                },
+                new LogAttributePredicate
+                {
+                    Key = "cloud.region",
+                    Value = "west",
+                    Source = LogAttributeSource.Resource
+                }
+            }
+        });
+
+        var result = Assert.Single(response.Results);
+        var log = Assert.Single(result.Logs);
+        Assert.Equal("matching log", log.Body.StringValue);
+
+        Assert.All(response.LogCounts, count => Assert.Equal("matching log", count.RawBody));
+    }
+
     private static async Task WaitForAsync(Func<Task<bool>> predicate, string failureMessage)
     {
         var timeoutAt = DateTime.UtcNow + DefaultTimeout;

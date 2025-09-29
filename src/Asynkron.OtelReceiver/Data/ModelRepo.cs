@@ -143,26 +143,54 @@ public class ModelRepo(
         var logs = new List<LogEntity>();
         foreach (var t in chunk)
         {
-            var l = t.log;
+            var record = t.log;
 
-            //TODO: add formatted body
-            var r = t.resourceLog;
             var log = new LogEntity
             {
-                TraceId = l.TraceId.ToHex(),
-                SpanId = l.SpanId.ToHex(),
-                Timestamp = (long)l.TimeUnixNano,
-                ObservedTimestamp = (long)l.ObservedTimeUnixNano,
-                AttributeMap = l.Attributes.Select(x => $"{x.Key}:{x.Value.ToStringValue()}")
-                    .ToArray(),
-                SeverityText = l.SeverityText,
-                SeverityNumber = (byte)l.SeverityNumber,
-                Body = FormatLog(l),
-                RawBody = l.Body.StringValue,
-                ResourceMap = r.Resource.Attributes
-                    .Select(x => $"{x.Key}:{x.Value.ToStringValue()}").ToArray(),
-                Proto = l.ToByteArray(),
+                TraceId = record.TraceId.ToHex(),
+                SpanId = record.SpanId.ToHex(),
+                Timestamp = (long)record.TimeUnixNano,
+                ObservedTimestamp = (long)record.ObservedTimeUnixNano,
+                SeverityText = record.SeverityText,
+                SeverityNumber = (byte)record.SeverityNumber,
+                Body = FormatLog(record),
+                RawBody = record.Body.StringValue,
+                Proto = record.ToByteArray(),
             };
+
+            foreach (var attribute in record.Attributes)
+            {
+                var value = attribute.Value.ToStringValue();
+                if (string.IsNullOrWhiteSpace(attribute.Key) || string.IsNullOrEmpty(value))
+                {
+                    continue;
+                }
+
+                log.Attributes.Add(new LogAttributeEntity
+                {
+                    Key = attribute.Key,
+                    Value = value,
+                    Kind = LogAttributeKind.Record
+                });
+            }
+
+            var resource = t.resourceLog.Resource;
+            foreach (var attribute in resource.Attributes)
+            {
+                var value = attribute.Value.ToStringValue();
+                if (string.IsNullOrWhiteSpace(attribute.Key) || string.IsNullOrEmpty(value))
+                {
+                    continue;
+                }
+
+                log.Attributes.Add(new LogAttributeEntity
+                {
+                    Key = attribute.Key,
+                    Value = value,
+                    Kind = LogAttributeKind.Resource
+                });
+            }
+
             logs.Add(log);
         }
 
@@ -294,9 +322,43 @@ public class ModelRepo(
             .Where(span => candidateIds.Contains(span.TraceId))
             .ToListAsync();
 
-        var logs = await context.Logs
-            .Where(log => candidateIds.Contains(log.TraceId))
-            .ToListAsync();
+        var logAttributePredicates = request.LogAttributes
+            .Where(predicate => !string.IsNullOrWhiteSpace(predicate.Key))
+            .ToList();
+
+        var logsQuery = context.Logs
+            .Where(log => candidateIds.Contains(log.TraceId));
+
+        var requiresLogSearch = !string.IsNullOrWhiteSpace(request.LogSearch);
+        if (requiresLogSearch)
+        {
+            var searchLower = request.LogSearch!.ToLowerInvariant();
+            logsQuery = logsQuery.Where(log =>
+                log.RawBody != null && log.RawBody.ToLower().Contains(searchLower));
+        }
+
+        foreach (var predicate in logAttributePredicates)
+        {
+            var key = predicate.Key;
+            var value = predicate.Value ?? string.Empty;
+            var hasValue = !string.IsNullOrEmpty(predicate.Value);
+            LogAttributeKind? requiredKind = predicate.Source switch
+            {
+                LogAttributeSource.Record => LogAttributeKind.Record,
+                LogAttributeSource.Resource => LogAttributeKind.Resource,
+                _ => null
+            };
+
+            logsQuery = logsQuery.Where(log => log.Attributes.Any(attribute =>
+                attribute.Key == key &&
+                (!hasValue || attribute.Value == value) &&
+                (!requiredKind.HasValue || attribute.Kind == requiredKind.Value)));
+        }
+
+        var logs = await logsQuery.ToListAsync();
+
+        // If the request filters logs, traces without matching records can be skipped early.
+        var requireMatchingLogs = requiresLogSearch || logAttributePredicates.Count > 0;
 
         var traceOrder = candidates
             .OrderByDescending(group => group.Start)
@@ -323,18 +385,16 @@ public class ModelRepo(
                 continue;
             }
 
-            selectedTraceIds.Add(traceId);
-
             var traceLogs = logs
                 .Where(log => log.TraceId == traceId)
                 .ToList();
 
-            if (!string.IsNullOrWhiteSpace(request.LogSearch))
+            if (requireMatchingLogs && traceLogs.Count == 0)
             {
-                traceLogs = traceLogs
-                    .Where(log => log.RawBody?.Contains(request.LogSearch, StringComparison.OrdinalIgnoreCase) ?? false)
-                    .ToList();
+                continue;
             }
+
+            selectedTraceIds.Add(traceId);
 
             var overview = new TraceOverview
             {
