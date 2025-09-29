@@ -1,13 +1,31 @@
-using Microsoft.EntityFrameworkCore;
 using Asynkron.OtelReceiver.Data;
 using Asynkron.OtelReceiver.Services;
+using Asynkron.OtelReceiver.Data.Providers;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddDbContextFactory<OtelReceiverContext>(options =>
+const string defaultProvider = "Postgres";
+var databaseProvider = builder.Configuration.GetValue<string>("DatabaseProvider") ?? defaultProvider;
+
+if (string.Equals(databaseProvider, "Sqlite", StringComparison.OrdinalIgnoreCase))
 {
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"));
-});
+    builder.Services.AddDbContextFactory<OtelReceiverContext>(options =>
+    {
+        options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection"));
+    });
+
+    builder.Services.AddScoped<ISpanBulkInserter, SqliteSpanBulkInserter>();
+}
+else
+{
+    builder.Services.AddDbContextFactory<OtelReceiverContext>(options =>
+    {
+        options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"));
+    });
+
+    builder.Services.AddScoped<ISpanBulkInserter, PostgresSpanBulkInserter>();
+}
 
 builder.Services.AddGrpc();
 
