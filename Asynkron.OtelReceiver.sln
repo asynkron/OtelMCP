@@ -1,10 +1,6 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 #
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Asynkron.OtelReceiver.Core", "src\Asynkron.OtelReceiver.Core\Asynkron.OtelReceiver.Core.csproj", "{F3E53C15-66A5-4F04-AD91-A86265A6F8A0}"
-EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Asynkron.OtelReceiver", "src\Asynkron.OtelReceiver\Asynkron.OtelReceiver.csproj", "{C450C714-E004-4D85-A3E6-3788D7AC4C29}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Asynkron.OtelReceiver.Host", "src\Asynkron.OtelReceiver.Host\Asynkron.OtelReceiver.Host.csproj", "{1CCF286C-F6FC-4A5A-8C86-5690534FC47E}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Asynkron.OtelReceiver.Tests", "tests\Asynkron.OtelReceiver.Tests\Asynkron.OtelReceiver.Tests.csproj", "{4345F940-93A6-4647-9F64-A8D03C5FA5A8}"
 EndProject
@@ -14,18 +10,10 @@ Global
         Release|Any CPU = Release|Any CPU
     EndGlobalSection
     GlobalSection(ProjectConfigurationPlatforms) = postSolution
-        {F3E53C15-66A5-4F04-AD91-A86265A6F8A0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-        {F3E53C15-66A5-4F04-AD91-A86265A6F8A0}.Debug|Any CPU.Build.0 = Debug|Any CPU
-        {F3E53C15-66A5-4F04-AD91-A86265A6F8A0}.Release|Any CPU.ActiveCfg = Release|Any CPU
-        {F3E53C15-66A5-4F04-AD91-A86265A6F8A0}.Release|Any CPU.Build.0 = Release|Any CPU
         {C450C714-E004-4D85-A3E6-3788D7AC4C29}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
         {C450C714-E004-4D85-A3E6-3788D7AC4C29}.Debug|Any CPU.Build.0 = Debug|Any CPU
         {C450C714-E004-4D85-A3E6-3788D7AC4C29}.Release|Any CPU.ActiveCfg = Release|Any CPU
         {C450C714-E004-4D85-A3E6-3788D7AC4C29}.Release|Any CPU.Build.0 = Release|Any CPU
-        {1CCF286C-F6FC-4A5A-8C86-5690534FC47E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-        {1CCF286C-F6FC-4A5A-8C86-5690534FC47E}.Debug|Any CPU.Build.0 = Debug|Any CPU
-        {1CCF286C-F6FC-4A5A-8C86-5690534FC47E}.Release|Any CPU.ActiveCfg = Release|Any CPU
-        {1CCF286C-F6FC-4A5A-8C86-5690534FC47E}.Release|Any CPU.Build.0 = Release|Any CPU
         {4345F940-93A6-4647-9F64-A8D03C5FA5A8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
         {4345F940-93A6-4647-9F64-A8D03C5FA5A8}.Debug|Any CPU.Build.0 = Debug|Any CPU
         {4345F940-93A6-4647-9F64-A8D03C5FA5A8}.Release|Any CPU.ActiveCfg = Release|Any CPU
