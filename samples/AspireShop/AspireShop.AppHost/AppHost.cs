@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 
 DisableProcessProxies();
 
+
 var builder = DistributedApplication.CreateBuilder(args);
 
 // Host the OtelMCP receiver alongside the Aspire sample so telemetry flows locally by default.
