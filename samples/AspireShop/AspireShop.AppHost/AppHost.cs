@@ -1,5 +1,10 @@
+using System;
+using System.Net;
 using AspireShop.AppHost;
 using Microsoft.Extensions.Configuration;
+
+DisableProcessProxies();
+
 
 var builder = DistributedApplication.CreateBuilder(args);
 
@@ -62,3 +67,23 @@ builder.AddProject<Projects.AspireShop_Frontend>("frontend")
     .WaitFor(otelCollector);
 
 builder.Build().Run();
+
+static void DisableProcessProxies()
+{
+    // Aspire's DCP client talks to local daemons, so proxy interception only causes startup failures
+    // in sandboxed environments that inject mandatory HTTP(S) proxies.
+    var proxyVariables = new[]
+    {
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy"
+    };
+
+    foreach (var variable in proxyVariables)
+    {
+        Environment.SetEnvironmentVariable(variable, null);
+    }
+
+#pragma warning disable SYSLIB0014 // WebRequest is obsolete but still controls the default proxy used by SocketsHttpHandler.
+    WebRequest.DefaultWebProxy = null;
+#pragma warning restore SYSLIB0014
+}

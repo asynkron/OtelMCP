@@ -8,7 +8,9 @@ Key subdirectories:
 
 - [`AspireShop.AppHost`](AspireShop.AppHost) – Aspire distributed application configuration that orchestrates the workload. In
   this repository it additionally hosts the `src/Asynkron.OtelReceiver` project and injects OTLP exporter settings so telemetry
-  automatically flows into OtelMCP during development.
+  automatically flows into OtelMCP during development. The AppHost also disables process-wide HTTP(S) proxies to keep Aspire's
+  DCP sidecars from being intercepted in locked-down environments (otherwise the sandbox's mandatory proxy causes startup
+  failures even in `OtelMcp:SimpleMode`).
 - [`AspireShop.BasketService`](AspireShop.BasketService) – gRPC basket microservice and Redis interactions.
 - [`AspireShop.CatalogService`](AspireShop.CatalogService) – HTTP API that surfaces catalog data from PostgreSQL.
 - [`AspireShop.CatalogDbManager`](AspireShop.CatalogDbManager) – provisioning utility for the catalog database.
