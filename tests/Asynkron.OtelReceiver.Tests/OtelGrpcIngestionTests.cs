@@ -98,7 +98,8 @@ public class OtelReceiverApplicationFactory : WebApplicationFactory<Program>
     }
 }
 
-public class OtelGrpcIngestionTests : IClassFixture<OtelReceiverApplicationFactory>
+[Collection("GrpcIntegration")]
+public class OtelGrpcIngestionTests
 {
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(5);
     private readonly OtelReceiverApplicationFactory _factory;

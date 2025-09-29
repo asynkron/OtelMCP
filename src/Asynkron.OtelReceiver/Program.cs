@@ -49,6 +49,8 @@ app.MapGrpcService<TraceServiceImpl>();
 app.MapGrpcService<LogsServiceImpl>();
 app.MapGrpcService<MetricsServiceImpl>();
 app.MapGrpcService<ReceiverMetricsServiceImpl>();
+app.MapGrpcService<DataServiceImpl>();
+app.MapMcpStreamingEndpoint();
 app.MapGet("/", () => "Asynkron Otel Receiver");
 
 await using (var scope = app.Services.CreateAsyncScope())
