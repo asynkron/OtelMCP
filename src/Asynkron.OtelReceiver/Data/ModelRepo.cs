@@ -281,6 +281,32 @@ public class ModelRepo(
         var spanNames = new HashSet<string>(StringComparer.Ordinal);
         CollectFilterHints(request.Filter, serviceNames, spanNames);
 
+        var (minDuration, maxDuration) = CollectDurationBounds(request.Filter);
+        if (minDuration.HasValue && maxDuration.HasValue && minDuration.Value > maxDuration.Value)
+        {
+            return new SearchTracesResponse();
+        }
+
+        if (minDuration.HasValue)
+        {
+            if (minDuration.Value > long.MaxValue)
+            {
+                return new SearchTracesResponse();
+            }
+
+            var minDurationTicks = (long)minDuration.Value;
+            // Cheap duration guard so SQL drops obviously short spans before we hydrate traces.
+            spansQuery = spansQuery.Where(span =>
+                span.EndTimestamp - span.StartTimestamp >= minDurationTicks);
+        }
+
+        if (maxDuration.HasValue && maxDuration.Value <= (ulong)long.MaxValue)
+        {
+            var maxDurationTicks = (long)maxDuration.Value;
+            spansQuery = spansQuery.Where(span =>
+                span.EndTimestamp - span.StartTimestamp <= maxDurationTicks);
+        }
+
         if (serviceNames.Count > 0 && spanNames.Count == 0)
         {
             spansQuery = spansQuery.Where(span => serviceNames.Contains(span.ServiceName));
@@ -719,6 +745,58 @@ public class ModelRepo(
         }
     }
 
+    private static (ulong? Min, ulong? Max) CollectDurationBounds(TraceFilterExpression? expression)
+        => CollectDurationBounds(expression, allowHints: true);
+
+    private static (ulong? Min, ulong? Max) CollectDurationBounds(
+        TraceFilterExpression? expression,
+        bool allowHints)
+    {
+        if (!allowHints || expression is null)
+        {
+            return (null, null);
+        }
+
+        return expression.ExpressionCase switch
+        {
+            TraceFilterExpression.ExpressionOneofCase.Duration => NormalizeDurationBounds(expression.Duration),
+            TraceFilterExpression.ExpressionOneofCase.Composite => CollectCompositeDurationBounds(expression.Composite),
+            _ => (null, null)
+        };
+    }
+
+    private static (ulong? Min, ulong? Max) CollectCompositeDurationBounds(TraceFilterComposite? composite)
+    {
+        if (composite is null || composite.Expressions.Count == 0)
+        {
+            return (null, null);
+        }
+
+        if (composite.Operator == TraceFilterComposite.Types.Operator.Or)
+        {
+            return (null, null);
+        }
+
+        ulong? min = null;
+        ulong? max = null;
+
+        foreach (var child in composite.Expressions)
+        {
+            var (childMin, childMax) = CollectDurationBounds(child, allowHints: true);
+            if (childMin.HasValue)
+            {
+                min = min.HasValue ? Math.Max(min.Value, childMin.Value) : childMin.Value;
+            }
+
+            if (childMax.HasValue)
+            {
+                max = max.HasValue ? Math.Min(max.Value, childMax.Value) : childMax.Value;
+            }
+        }
+
+        return (min, max);
+    }
+
     private static void CollectRequiredLogAttributeFilters(
         TraceFilterExpression? expression,
         ICollection<AttributeFilter> filters,
@@ -796,10 +874,63 @@ public class ModelRepo(
                 EvaluateServiceFilter(expression.Service, traceContext),
             TraceFilterExpression.ExpressionOneofCase.SpanName =>
                 EvaluateSpanNameFilter(expression.SpanName, traceContext),
+            TraceFilterExpression.ExpressionOneofCase.Error =>
+                EvaluateErrorFilter(expression.Error, traceContext),
+            TraceFilterExpression.ExpressionOneofCase.Duration =>
+                EvaluateDurationFilter(expression.Duration, traceContext),
             TraceFilterExpression.ExpressionOneofCase.Composite =>
                 EvaluateCompositeFilter(expression.Composite, traceContext, clauseMap),
             _ => true
         };
+    }
+
+    // Error filters promote familiar TraceLens semantics (any span error marks the whole trace).
+    private static bool EvaluateErrorFilter(ErrorFilter filter, TraceContext traceContext)
+    {
+        if (filter is null)
+        {
+            return false;
+        }
+
+        return filter.Mode switch
+        {
+            ErrorFilter.Types.Mode.OnlyErrors => traceContext.Spans.Any(SpanHasError),
+            ErrorFilter.Types.Mode.OnlyNonErrors => traceContext.Spans.All(span => !SpanHasError(span)),
+            _ => true
+        };
+    }
+
+    // Duration filters operate on individual span runtimes to keep behaviour intuitive for trace search callers.
+    private static bool EvaluateDurationFilter(DurationFilter filter, TraceContext traceContext)
+    {
+        if (filter is null)
+        {
+            return false;
+        }
+
+        var (min, max) = NormalizeDurationBounds(filter);
+        if (min is null && max is null)
+        {
+            return true;
+        }
+
+        foreach (var span in traceContext.Spans)
+        {
+            var duration = GetSpanDurationNanos(span);
+            if (min.HasValue && duration < min.Value)
+            {
+                continue;
+            }
+
+            if (max.HasValue && duration > max.Value)
+            {
+                continue;
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     private static bool EvaluateCompositeFilter(
@@ -1035,6 +1166,24 @@ public class ModelRepo(
         }
 
         return $"{prefix}:{key}";
+    }
+
+    private static (ulong? Min, ulong? Max) NormalizeDurationBounds(DurationFilter? filter)
+    {
+        if (filter is null)
+        {
+            return (null, null);
+        }
+
+        var min = filter.MinNanos > 0 ? (ulong?)filter.MinNanos : null;
+        var max = filter.MaxNanos > 0 ? (ulong?)filter.MaxNanos : null;
+        return (min, max);
+    }
+
+    private static ulong GetSpanDurationNanos(SpanEntity span)
+    {
+        var duration = span.EndTimestamp - span.StartTimestamp;
+        return duration <= 0 ? 0UL : (ulong)duration;
     }
 
     private readonly record struct TraceContext(

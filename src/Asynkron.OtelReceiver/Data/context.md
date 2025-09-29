@@ -16,7 +16,7 @@ The data layer converts OTLP payloads into persisted records and exposes read/wr
 - `SaveLogs` and `SaveMetrics` transform OTLP structures into relational rows while formatting log bodies and populating attribute indexes for downstream search.
 - `LogEntity` normalises both resource and record attributes into the `LogAttributes` table so `ModelRepo.SearchTraces` can push log-body and log-attribute predicates to SQL instead of filtering hydrated entities in memory.
 - Snapshot and metadata endpoints support TraceLens visualisation features (see [`../TraceLens/context.md`](../TraceLens/context.md)).
-- `ModelRepo.SearchTraces` accepts the TraceLens filter expression tree (see `tracelens.proto`) and translates span-level attribute/service predicates into SQL so composite AND/OR searches are evaluated in the database before results are hydrated.
+- `ModelRepo.SearchTraces` accepts the TraceLens filter expression tree (see `tracelens.proto`) and translates span-level attribute/service predicates into SQL so composite AND/OR searches are evaluated in the database before results are hydrated. Error and duration leaf filters are recognised as well; duration bounds are pushed down to SQL while error checks run alongside the existing in-memory evaluation.
 - Read-focused helpers in `ModelRepo` use `AsNoTracking()` so metadata/service-map lookups and search projections avoid unnecessary EF Core change tracking overhead.
 
 When changing entity shape or persistence semantics, update this context alongside the relevant migration summary in [`../Migrations/context.md`](../Migrations/context.md).
