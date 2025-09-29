@@ -6,7 +6,7 @@ xUnit project covering repository persistence logic, SQLite bulk insert behaviou
   - `SqliteSpanBulkInserter.InsertAsync` to ensure batches are persisted correctly when `SaveChangesAsync` is invoked.
   - `ModelRepo.SaveTrace` attribute/span-name persistence using an in-memory SQLite database and `ReceiverMetricsCollector`.
   - `ModelRepo.SaveLogs`/`SaveMetrics` to verify log and metric entities are stored.
-- [`OtelGrpcIngestionTests.cs`](OtelGrpcIngestionTests.cs) spins up the full ASP.NET Core host with `WebApplicationFactory`, pushes fake OTLP spans/logs/metrics through the gRPC endpoints, and asserts the database captures the payloads.
+- [`OtelGrpcIngestionTests.cs`](OtelGrpcIngestionTests.cs) spins up the full ASP.NET Core host with `WebApplicationFactory`, pushes fake OTLP spans/logs/metrics through the gRPC endpoints, and asserts the database captures the payloads (including guards against duplicate metric persistence across multi-resource exports).
 - [`OtelGrpcIngestionTests.cs`](OtelGrpcIngestionTests.cs) spins up the full ASP.NET Core host with `WebApplicationFactory`, pushes fake OTLP spans/logs/metrics through the gRPC endpoints, and asserts the database captures the payloads.
 - [`DataServiceTests.cs`](DataServiceTests.cs) verifies the TraceLens gRPC surface (search, tag lookups, service map metadata) is exposed and returns data after ingesting sample telemetry.
 - [`McpStreamingHttpTests.cs`](McpStreamingHttpTests.cs) exercises the streaming HTTP MCP endpoint to ensure it mirrors the TraceLens search and metadata commands exposed over gRPC.
