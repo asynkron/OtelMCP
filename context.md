@@ -7,6 +7,8 @@ This repository hosts the **Asynkron OTLP Receiver**, a .NET 8 solution for inge
 - [`src/context.md`](src/context.md) – code for the ASP.NET Core receiver, TraceLens utilities, database access, and generated OTLP protobuf definitions.
 - [`tests/context.md`](tests/context.md) – unit test projects that exercise the receiver infrastructure.
 - [`docker-compose.yml`](docker-compose.yml) – local Postgres + Jaeger environment used during development.
+- [`docs/context.md`](docs/context.md) – repository guides and research notes, including integration walkthroughs.
+- [`samples/context.md`](samples/context.md) – vendored telemetry generators (e.g., the .NET Aspire Shop sample) for producing OTLP traffic during development.
 - [`AGENTS.md`](AGENTS.md) – workflow guidance for AI maintainers. Please read it together with this `context.md` and update both when altering repository conventions.
 
 ## Key capabilities

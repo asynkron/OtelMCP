@@ -1,0 +1,9 @@
+# `docs` Directory Context
+
+This folder collects user-facing operational guides, integration notes, and research summaries that don't fit directly into the source tree. Each markdown file explains a workflow (e.g., wiring external systems to the receiver) so future maintainers can reuse the findings without repeating exploratory work.
+
+Current entries:
+
+- [`aspire-sample-integration.md`](aspire-sample-integration.md) – step-by-step instructions for running the vendored .NET Aspire Shop sample against the receiver to generate realistic OTLP traffic.
+
+Add a new document whenever you complete an investigation whose results will be referenced again. Keep filenames descriptive and link to them from parent `context.md` files when relevant.
