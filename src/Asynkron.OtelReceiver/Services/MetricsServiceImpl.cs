@@ -41,23 +41,23 @@ public class MetricsServiceImpl : MetricsService.MetricsServiceBase
                             break;
                         case Metric.DataOneofCase.Gauge:
                             start = m.Gauge.DataPoints.Min(d => d.TimeUnixNano);
-                            end = m.Gauge.DataPoints.Min(d => d.TimeUnixNano);
+                            end = m.Gauge.DataPoints.Max(d => d.TimeUnixNano);
                             break;
                         case Metric.DataOneofCase.Sum:
                             start = m.Sum.DataPoints.Min(d => d.TimeUnixNano);
-                            end = m.Sum.DataPoints.Min(d => d.TimeUnixNano);
+                            end = m.Sum.DataPoints.Max(d => d.TimeUnixNano);
                             break;
                         case Metric.DataOneofCase.Histogram:
                             start = m.Histogram.DataPoints.Min(d => d.TimeUnixNano);
-                            end = m.Histogram.DataPoints.Min(d => d.TimeUnixNano);
+                            end = m.Histogram.DataPoints.Max(d => d.TimeUnixNano);
                             break;
                         case Metric.DataOneofCase.ExponentialHistogram:
                             start = m.ExponentialHistogram.DataPoints.Min(d => d.TimeUnixNano);
-                            end = m.ExponentialHistogram.DataPoints.Min(d => d.TimeUnixNano);
+                            end = m.ExponentialHistogram.DataPoints.Max(d => d.TimeUnixNano);
                             break;
                         case Metric.DataOneofCase.Summary:
                             start = m.Summary.DataPoints.Min(d => d.TimeUnixNano);
-                            end = m.Summary.DataPoints.Min(d => d.TimeUnixNano);
+                            end = m.Summary.DataPoints.Max(d => d.TimeUnixNano);
                             break;
                         default:
                             break;
