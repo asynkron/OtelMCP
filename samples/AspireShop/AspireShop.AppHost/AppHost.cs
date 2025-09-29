@@ -1,9 +1,21 @@
 using AspireShop.AppHost;
+using Microsoft.Extensions.Configuration;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
 // Host the OtelMCP receiver alongside the Aspire sample so telemetry flows locally by default.
 var otelCollector = builder.AddOtelMcp();
+
+var simpleMode = builder.Configuration.GetValue("OtelMcp:SimpleMode", false);
+
+if (simpleMode)
+{
+    builder.AddProject<Projects.AspireShop_LoadGenerator>("loadgenerator")
+        .WaitFor(otelCollector);
+
+    builder.Build().Run();
+    return;
+}
 
 var postgres = builder.AddPostgres("postgres")
     .WithPgAdmin()
