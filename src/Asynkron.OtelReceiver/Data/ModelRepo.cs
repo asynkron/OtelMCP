@@ -300,28 +300,6 @@ public class ModelRepo(
             spansQuery = spansQuery.Where(span => span.EndTimestamp <= (long)request.EndTime);
         }
 
-        var candidates = await spansQuery
-            .GroupBy(span => span.TraceId)
-            .Select(group => new
-            {
-                TraceId = group.Key,
-                Start = group.Min(span => span.StartTimestamp)
-            })
-            .OrderByDescending(group => group.Start)
-            .Take(limit * 3)
-            .ToListAsync();
-
-        if (candidates.Count == 0)
-        {
-            return new SearchTracesResponse();
-        }
-
-        var candidateIds = candidates.Select(group => group.TraceId).ToList();
-
-        var spans = await context.Spans
-            .Where(span => candidateIds.Contains(span.TraceId))
-            .ToListAsync();
-
         var logSearch = request.LogFilter?.BodyContains;
         var normalizedLogSearch = string.IsNullOrWhiteSpace(logSearch)
             ? null
@@ -330,115 +308,186 @@ public class ModelRepo(
         var requiredLogFilters = new List<AttributeFilter>();
         CollectRequiredLogAttributeFilters(request.Filter, requiredLogFilters, true);
 
-        IQueryable<LogEntity> logsQuery = context.Logs
-            .Where(log => candidateIds.Contains(log.TraceId));
-
-        if (normalizedLogSearch is not null)
-        {
-            logsQuery = logsQuery.Where(log =>
-                log.RawBody != null &&
-                EF.Functions.Like(log.RawBody.ToLower(), $"%{normalizedLogSearch}%"));
-        }
-
-        foreach (var filter in requiredLogFilters)
-        {
-            logsQuery = ApplyLogAttributeFilter(logsQuery, filter);
-        }
-
-        var logs = await logsQuery
-            .Include(log => log.Attributes)
-            .ToListAsync();
-
-        var logsByTrace = logs
-            .GroupBy(log => log.TraceId)
-            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
-
-        var traceOrder = candidates
-            .OrderByDescending(group => group.Start)
-            .Select(group => group.TraceId)
-            .ToList();
-
         var response = new SearchTracesResponse();
-        var selectedTraceIds = new List<string>();
+        var selectedTraceIds = new HashSet<string>(StringComparer.Ordinal);
+        var evaluatedTraceIds = new List<string>();
+        var evaluatedTraceSet = new HashSet<string>(StringComparer.Ordinal);
+        var logCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var spanCounts = new Dictionary<string, int>(StringComparer.Ordinal);
 
-        foreach (var traceId in traceOrder)
+        // Continue fetching trace-id batches until we either satisfy the limit
+        // or run out of candidates in timestamp order.
+        while (response.Results.Count < limit)
         {
-            var traceSpans = spans
-                .Where(span => span.TraceId == traceId)
-                .OrderBy(span => span.StartTimestamp)
-                .ToList();
-
-            if (traceSpans.Count == 0)
+            var batchSpansQuery = spansQuery;
+            if (evaluatedTraceIds.Count > 0)
             {
-                continue;
+                var excluded = evaluatedTraceIds.ToArray();
+                batchSpansQuery = batchSpansQuery.Where(span => !excluded.Contains(span.TraceId));
             }
 
-            var traceLogs = logsByTrace.TryGetValue(traceId, out var groupedLogs)
-                ? groupedLogs
-                : new List<LogEntity>();
+            var candidates = await batchSpansQuery
+                .GroupBy(span => span.TraceId)
+                .Select(group => new
+                {
+                    TraceId = group.Key,
+                    Start = group.Min(span => span.StartTimestamp)
+                })
+                .OrderByDescending(group => group.Start)
+                .ThenBy(group => group.TraceId)
+                .Take(limit * 3)
+                .ToListAsync();
 
-            var clauseMap = new Dictionary<string, AttributeClauseMatch>(StringComparer.Ordinal);
-            var traceContext = new TraceContext(traceSpans, traceLogs);
-            if (!EvaluateTraceFilter(request.Filter, traceContext, clauseMap))
+            if (candidates.Count == 0)
             {
-                continue;
+                break;
             }
 
-            selectedTraceIds.Add(traceId);
+            var candidateIds = candidates.Select(group => group.TraceId).ToList();
+            foreach (var traceId in candidateIds)
+            {
+                if (evaluatedTraceSet.Add(traceId))
+                {
+                    evaluatedTraceIds.Add(traceId);
+                }
+            }
+
+            var spans = await context.Spans
+                .Where(span => candidateIds.Contains(span.TraceId))
+                .ToListAsync();
+
+            IQueryable<LogEntity> logsQuery = context.Logs
+                .Where(log => candidateIds.Contains(log.TraceId));
 
             if (normalizedLogSearch is not null)
             {
-                traceLogs = traceLogs
-                    .Where(log => log.RawBody?.Contains(logSearch!, StringComparison.OrdinalIgnoreCase) ?? false)
+                logsQuery = logsQuery.Where(log =>
+                    log.RawBody != null &&
+                    EF.Functions.Like(log.RawBody.ToLower(), $"%{normalizedLogSearch}%"));
+            }
+
+            foreach (var filter in requiredLogFilters)
+            {
+                logsQuery = ApplyLogAttributeFilter(logsQuery, filter);
+            }
+
+            var logs = await logsQuery
+                .Include(log => log.Attributes)
+                .ToListAsync();
+
+            var logsByTrace = logs
+                .GroupBy(log => log.TraceId)
+                .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+
+            var traceOrder = candidates
+                .OrderByDescending(group => group.Start)
+                .ThenBy(group => group.TraceId, StringComparer.Ordinal)
+                .Select(group => group.TraceId)
+                .ToList();
+
+            foreach (var traceId in traceOrder)
+            {
+                var traceSpans = spans
+                    .Where(span => span.TraceId == traceId)
+                    .OrderBy(span => span.StartTimestamp)
                     .ToList();
-            }
 
-            var overview = new TraceOverview
-            {
-                TraceId = traceId,
-                Name = traceSpans.First().OperationName,
-                StartTimeUnixNano = (ulong)traceSpans.Min(span => span.StartTimestamp),
-                EndTimeUnixNano = (ulong)traceSpans.Max(span => span.EndTimestamp),
-                HasError = traceSpans.Any(SpanHasError)
-            };
-
-            overview.Spans.AddRange(traceSpans.Select(span => new SpanOverview
-            {
-                TraceId = span.TraceId,
-                OperationName = span.OperationName,
-                ServiceName = span.ServiceName
-            }));
-
-            var traceResult = new SearchTraceResult
-            {
-                Trace = overview
-            };
-
-            foreach (var log in traceLogs)
-            {
-                traceResult.Logs.Add(LogRecord.Parser.ParseFrom(log.Proto));
-            }
-
-            foreach (var clause in clauseMap.Values.OrderBy(match => match.Clause, StringComparer.Ordinal))
-            {
-                traceResult.AttributeClauses.Add(clause);
-            }
-
-            foreach (var span in traceSpans)
-            {
-                if (span.Proto is null || span.Proto.Length == 0)
+                if (traceSpans.Count == 0)
                 {
                     continue;
                 }
 
-                var stored = SpanWithService.Parser.ParseFrom(span.Proto);
-                if (stored.Span is not null)
+                var traceLogs = logsByTrace.TryGetValue(traceId, out var groupedLogs)
+                    ? groupedLogs
+                    : new List<LogEntity>();
+
+                var clauseMap = new Dictionary<string, AttributeClauseMatch>(StringComparer.Ordinal);
+                var traceContext = new TraceContext(traceSpans, traceLogs);
+                if (!EvaluateTraceFilter(request.Filter, traceContext, clauseMap))
                 {
-                    traceResult.Spans.Add(stored.Span);
+                    continue;
+                }
+
+                if (!selectedTraceIds.Add(traceId))
+                {
+                    continue;
+                }
+
+                if (normalizedLogSearch is not null)
+                {
+                    traceLogs = traceLogs
+                        .Where(log => log.RawBody?.Contains(logSearch!, StringComparison.OrdinalIgnoreCase) ?? false)
+                        .ToList();
+                }
+
+                foreach (var log in traceLogs)
+                {
+                    var key = log.RawBody ?? string.Empty;
+                    logCounts[key] = logCounts.TryGetValue(key, out var existingLogCount)
+                        ? existingLogCount + 1
+                        : 1;
+                }
+
+                foreach (var span in traceSpans)
+                {
+                    var key = span.OperationName ?? string.Empty;
+                    spanCounts[key] = spanCounts.TryGetValue(key, out var existingSpanCount)
+                        ? existingSpanCount + 1
+                        : 1;
+                }
+
+                var overview = new TraceOverview
+                {
+                    TraceId = traceId,
+                    Name = traceSpans.First().OperationName,
+                    StartTimeUnixNano = (ulong)traceSpans.Min(span => span.StartTimestamp),
+                    EndTimeUnixNano = (ulong)traceSpans.Max(span => span.EndTimestamp),
+                    HasError = traceSpans.Any(SpanHasError)
+                };
+
+                overview.Spans.AddRange(traceSpans.Select(span => new SpanOverview
+                {
+                    TraceId = span.TraceId,
+                    OperationName = span.OperationName,
+                    ServiceName = span.ServiceName
+                }));
+
+                var traceResult = new SearchTraceResult
+                {
+                    Trace = overview
+                };
+
+                foreach (var log in traceLogs)
+                {
+                    traceResult.Logs.Add(LogRecord.Parser.ParseFrom(log.Proto));
+                }
+
+                foreach (var clause in clauseMap.Values.OrderBy(match => match.Clause, StringComparer.Ordinal))
+                {
+                    traceResult.AttributeClauses.Add(clause);
+                }
+
+                foreach (var span in traceSpans)
+                {
+                    if (span.Proto is null || span.Proto.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    var stored = SpanWithService.Parser.ParseFrom(span.Proto);
+                    if (stored.Span is not null)
+                    {
+                        traceResult.Spans.Add(stored.Span);
+                    }
+                }
+
+                response.Results.Add(traceResult);
+
+                if (response.Results.Count == limit)
+                {
+                    break;
                 }
             }
-
-            response.Results.Add(traceResult);
 
             if (response.Results.Count == limit)
             {
@@ -446,29 +495,23 @@ public class ModelRepo(
             }
         }
 
-        var logCounts = logs
-            .Where(log => selectedTraceIds.Contains(log.TraceId))
-            .Where(log => normalizedLogSearch is null ||
-                          (log.RawBody?.Contains(logSearch!, StringComparison.OrdinalIgnoreCase) ?? false))
-            .GroupBy(log => log.RawBody ?? string.Empty)
-            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
-
-        var spanCounts = spans
-            .Where(span => selectedTraceIds.Contains(span.TraceId))
-            .GroupBy(span => span.OperationName ?? string.Empty)
-            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
-
-        response.LogCounts.AddRange(logCounts.Select(kvp => new LogCount
+        foreach (var kvp in logCounts)
         {
-            RawBody = kvp.Key,
-            Count = kvp.Value
-        }));
+            response.LogCounts.Add(new LogCount
+            {
+                RawBody = kvp.Key,
+                Count = kvp.Value
+            });
+        }
 
-        response.SpanCounts.AddRange(spanCounts.Select(kvp => new SpanCount
+        foreach (var kvp in spanCounts)
         {
-            SpanName = kvp.Key,
-            Count = kvp.Value
-        }));
+            response.SpanCounts.Add(new SpanCount
+            {
+                SpanName = kvp.Key,
+                Count = kvp.Value
+            });
+        }
 
         return response;
     }

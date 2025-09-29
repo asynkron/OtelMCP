@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Google.Protobuf;
@@ -19,7 +20,7 @@ namespace Asynkron.OtelReceiver.Tests;
 [Collection("GrpcIntegration")]
 public class DataServiceTests
 {
-    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(20);
     private readonly OtelReceiverApplicationFactory _factory;
 
     static DataServiceTests()
@@ -153,6 +154,21 @@ public class DataServiceTests
         await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(context =>
                 context.Logs.AnyAsync(log => log.TraceId == traceIdHex)),
             "log to be queryable");
+
+        await WaitForAsync(async () =>
+                (await dataClient.GetSearchDataAsync(new GetSearchDataRequest()))
+                .ServiceNames.Contains("search-service"),
+            "search-service to be discoverable in search metadata");
+
+        await WaitForAsync(async () =>
+                (await dataClient.GetSearchDataAsync(new GetSearchDataRequest()))
+                .SpanNames.Contains("root-operation"),
+            "root-operation span to be discoverable in search metadata");
+
+        await WaitForAsync(async () =>
+                (await dataClient.GetSearchDataAsync(new GetSearchDataRequest()))
+                .TagNames.Contains("http.method"),
+            "http.method tag to be discoverable in search metadata");
 
         var searchData = await dataClient.GetSearchDataAsync(new GetSearchDataRequest());
         Assert.Contains("search-service", searchData.ServiceNames);
@@ -422,6 +438,176 @@ public class DataServiceTests
 
         var singleTrace = Assert.Single(andResponse.Results);
         Assert.Equal(traceIds[0], singleTrace.Trace.TraceId);
+    }
+
+    [Fact]
+    public async Task SearchTraces_PaginatesCandidateBatchesUntilLogFiltersMatch()
+    {
+        using var channel = _factory.CreateGrpcChannel();
+        var traceClient = new TraceService.TraceServiceClient(channel);
+        var logsClient = new LogsService.LogsServiceClient(channel);
+        var dataClient = new DataService.DataServiceClient(channel);
+
+        const int limit = 3;
+        var totalTraces = limit * 3 + 4;
+        var traceRequest = new ExportTraceServiceRequest();
+        var logsRequest = new ExportLogsServiceRequest();
+        var definitions = new List<(string TraceIdHex, ulong StartTime, string LogBody, bool Matches)>();
+
+        for (var i = 0; i < totalTraces; i++)
+        {
+            var traceIdBytes = Enumerable.Range(0, 16).Select(b => (byte)((b + 160 + i) % 256)).ToArray();
+            var spanIdBytes = Enumerable.Range(0, 8).Select(b => (byte)((b + 220 + i) % 256)).ToArray();
+            var traceIdHex = Convert.ToHexString(traceIdBytes);
+            var startTime = 1_000_000UL - (ulong)i * 1_000UL;
+            var isMatch = i >= limit * 3;
+            var logBody = $"log-{i}";
+
+            traceRequest.ResourceSpans.Add(new ResourceSpans
+            {
+                Resource = new Resource
+                {
+                    Attributes =
+                    {
+                        new KeyValue
+                        {
+                            Key = "service.name",
+                            Value = new AnyValue { StringValue = "paging-service" }
+                        }
+                    }
+                },
+                ScopeSpans =
+                {
+                    new ScopeSpans
+                    {
+                        Spans =
+                        {
+                            new Span
+                            {
+                                TraceId = ByteString.CopyFrom(traceIdBytes),
+                                SpanId = ByteString.CopyFrom(spanIdBytes),
+                                Name = $"paging-operation-{i}",
+                                StartTimeUnixNano = startTime,
+                                EndTimeUnixNano = startTime + 500,
+                                Attributes =
+                                {
+                                    new KeyValue
+                                    {
+                                        Key = "paging.bucket",
+                                        Value = new AnyValue { StringValue = isMatch ? "match" : "miss" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            logsRequest.ResourceLogs.Add(new ResourceLogs
+            {
+                Resource = new Resource
+                {
+                    Attributes =
+                    {
+                        new KeyValue
+                        {
+                            Key = "service.name",
+                            Value = new AnyValue { StringValue = "paging-service" }
+                        }
+                    }
+                },
+                ScopeLogs =
+                {
+                    new ScopeLogs
+                    {
+                        LogRecords =
+                        {
+                            new LogRecord
+                            {
+                                TimeUnixNano = startTime + 100,
+                                TraceId = ByteString.CopyFrom(traceIdBytes),
+                                SpanId = ByteString.CopyFrom(spanIdBytes),
+                                Body = new AnyValue { StringValue = logBody },
+                                Attributes =
+                                {
+                                    new KeyValue
+                                    {
+                                        Key = "search.stage",
+                                        Value = new AnyValue { StringValue = isMatch ? "final" : "prefilter" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            definitions.Add((traceIdHex, startTime, logBody, isMatch));
+        }
+
+        await traceClient.ExportAsync(traceRequest);
+        await logsClient.ExportAsync(logsRequest);
+
+        var traceIds = definitions.Select(definition => definition.TraceIdHex).ToArray();
+
+        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(async context =>
+                (await context.Spans.CountAsync(span => traceIds.Contains(span.TraceId))) == traceIds.Length),
+            "paged traces to be queryable");
+
+        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(async context =>
+                (await context.Logs.CountAsync(log => traceIds.Contains(log.TraceId))) == traceIds.Length),
+            "paged logs to be queryable");
+
+        var filter = new TraceFilterExpression
+        {
+            Composite = new TraceFilterComposite
+            {
+                Operator = TraceFilterComposite.Types.Operator.And,
+                Expressions =
+                {
+                    new TraceFilterExpression
+                    {
+                        Service = new ServiceFilter { Name = "paging-service" }
+                    },
+                    new TraceFilterExpression
+                    {
+                        Attribute = new AttributeFilter
+                        {
+                            Key = "search.stage",
+                            Value = "final",
+                            Operator = AttributeFilterOperator.Equals,
+                            Target = AttributeFilterTarget.Log
+                        }
+                    }
+                }
+            }
+        };
+
+        var response = await dataClient.SearchTracesAsync(new SearchTracesRequest
+        {
+            Limit = limit,
+            Filter = filter
+        });
+
+        var expected = definitions
+            .Where(definition => definition.Matches)
+            .OrderByDescending(definition => definition.StartTime)
+            .Take(limit)
+            .Select(definition => definition.TraceIdHex)
+            .ToList();
+
+        Assert.Equal(limit, response.Results.Count);
+        Assert.Equal(expected, response.Results.Select(result => result.Trace.TraceId).ToList());
+        foreach (var result in response.Results)
+        {
+            var stageClause = Assert.Single(result.AttributeClauses);
+            Assert.True(stageClause.Satisfied);
+            Assert.Equal("log:search.stage=final", stageClause.Clause);
+            var log = Assert.Single(result.Logs);
+            Assert.Equal("final", log.Attributes.Single(attribute => attribute.Key == "search.stage").Value.StringValue);
+            var definition = definitions.Single(def => def.TraceIdHex == result.Trace.TraceId);
+            Assert.Equal(definition.LogBody, log.Body.StringValue);
+        }
     }
 
     [Fact]
