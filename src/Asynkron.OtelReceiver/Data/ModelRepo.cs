@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Asynkron.OtelReceiver.Data.Providers;
+using Asynkron.OtelReceiver.Monitoring;
 using Google.Protobuf;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -17,7 +18,8 @@ namespace Asynkron.OtelReceiver.Data;
 public class ModelRepo(
     IDbContextFactory<OtelReceiverContext> contextFactory,
     ILogger<ModelRepo> logger,
-    ISpanBulkInserter spanBulkInserter)
+    ISpanBulkInserter spanBulkInserter,
+    IReceiverMetricsCollector metricsCollector)
 {
     private static readonly HashSet<string> BlockedAttributes =
     [
@@ -90,6 +92,7 @@ public class ModelRepo(
             logger.LogInformation("Before save changes");
             await context.SaveChangesAsync();
             logger.LogInformation("After save changes");
+            metricsCollector.RecordSpansStored(spans.Count);
         }
         catch (Exception x)
         {
@@ -169,6 +172,7 @@ public class ModelRepo(
             await context.Logs.AddRangeAsync(logs);
             await context.SaveChangesAsync();
             logger.LogInformation("After inserting logs");
+            metricsCollector.RecordLogsStored(logs.Count);
         }
         catch (Exception x)
         {
@@ -269,6 +273,7 @@ public class ModelRepo(
         await context.Metrics.AddRangeAsync(chunk);
         await context.SaveChangesAsync();
         logger.LogInformation("Saving metrics {Size}", chunk.Length);
+        metricsCollector.RecordMetricsStored(chunk.Length);
     }
 
     public async Task<GetMetricNamesResponse> GetMetricNames(GetMetricNamesRequest request)

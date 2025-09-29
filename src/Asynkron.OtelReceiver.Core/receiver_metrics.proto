@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package asynkron.otelreceiver.monitoring.v1;
+
+option csharp_namespace = "Asynkron.OtelReceiver.Monitoring.V1";
+
+import "google/protobuf/empty.proto";
+
+message ReceiverMetricsUpdate {
+  int64 spans_received = 1;
+  int64 spans_stored = 2;
+  int64 logs_received = 3;
+  int64 logs_stored = 4;
+  int64 metrics_received = 5;
+  int64 metrics_stored = 6;
+}
+
+service ReceiverMetricsService {
+  rpc SubscribeMetrics(google.protobuf.Empty) returns (stream ReceiverMetricsUpdate);
+}
