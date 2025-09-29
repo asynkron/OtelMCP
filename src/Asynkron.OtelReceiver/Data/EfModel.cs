@@ -14,6 +14,7 @@ public class OtelReceiverContext(DbContextOptions<OtelReceiverContext> options) 
     public DbSet<UserSettingsEntity> UserSettings { get; set; }
 
     public DbSet<SpanAttributeEntity> SpanAttributes { get; set; }
+    public DbSet<SpanAttributeIndexEntity> SpanAttributeIndex { get; set; }
     public DbSet<SpanNameEntity> SpanNames { get; set; }
 
     public DbSet<ComponentMetadataEntity> ComponentMetaData { get; set; }
@@ -21,6 +22,18 @@ public class OtelReceiverContext(DbContextOptions<OtelReceiverContext> options) 
     public DbSet<SnapshotEntity> Snapshots { get; set; }
 
     public DbSet<MetricEntity> Metrics { get; set; }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+
+        modelBuilder.Entity<SpanAttributeIndexEntity>()
+            .HasOne(index => index.Span)
+            .WithMany()
+            .HasForeignKey(index => index.SpanId)
+            .HasPrincipalKey(span => span.SpanId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
 }
 
 [Index(nameof(TraceId))]
@@ -94,6 +107,18 @@ public record SpanAttributeEntity
 {
     public string Key { get; set; }
     public string Value { get; set; }
+}
+
+[PrimaryKey(nameof(SpanId), nameof(Key), nameof(Value))]
+[Index(nameof(Key), nameof(Value))]
+public class SpanAttributeIndexEntity
+{
+    public string SpanId { get; set; }
+    public string Key { get; set; }
+    public string Value { get; set; }
+
+    [ForeignKey(nameof(SpanId))]
+    public SpanEntity Span { get; set; }
 }
 
 [PrimaryKey(nameof(ServiceName), nameof(Name))]

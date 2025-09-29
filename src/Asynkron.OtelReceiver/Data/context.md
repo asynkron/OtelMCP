@@ -3,8 +3,8 @@
 The data layer converts OTLP payloads into persisted records and exposes read/write utilities.
 
 ## Core files
-- [`EfModel.cs`](EfModel.cs) – defines `OtelReceiverContext` and EF Core entity types (`SpanEntity`, `LogEntity`, `MetricEntity`, metadata tables, etc.). Indices mirror common query patterns (trace/span IDs, service names).
-- [`ModelRepo.cs`](ModelRepo.cs) – orchestrates persistence of spans, logs, metrics, snapshots, and metadata. It batches OTLP messages, uses provider-specific span inserters, records receiver metrics, and exposes snapshot/metadata APIs consumed by gRPC services.
+- [`EfModel.cs`](EfModel.cs) – defines `OtelReceiverContext` and EF Core entity types (`SpanEntity`, `LogEntity`, `MetricEntity`, metadata tables, etc.). Indices mirror common query patterns (trace/span IDs, service names) and include the `SpanAttributeIndex` lookup table for per-span tag queries.
+- [`ModelRepo.cs`](ModelRepo.cs) – orchestrates persistence of spans, logs, metrics, snapshots, and metadata. It batches OTLP messages, uses provider-specific span inserters, records receiver metrics, and exposes snapshot/metadata APIs consumed by gRPC services. Trace ingestion now also persists span attributes into the `SpanAttributeIndex` table so SQL filters can target individual key/value pairs.
 - [`PrometheusModel.cs`](PrometheusModel.cs) & [`PrometheusRepo.cs`](PrometheusRepo.cs) – currently commented scaffolding for querying Prometheus alongside TraceLens state.
 
 ## Providers

@@ -44,6 +44,8 @@ public class ModelRepo(
         logger.LogInformation("Before save spans");
         var spanNames = new HashSet<SpanNameEntity>();
         var attributes = new HashSet<SpanAttributeEntity>();
+        var spanAttributeIndexEntries = new List<SpanAttributeIndexEntity>();
+        var spanAttributeIndexSeen = new HashSet<(string SpanId, string Key, string Value)>(SpanAttributeIndexComparer.Ordinal);
         await using var context = await contextFactory.CreateDbContextAsync();
 
         var spans = new List<SpanEntity>();
@@ -69,12 +71,25 @@ public class ModelRepo(
             {
                 if (BlockedAttributes.Contains(a.Key)) continue;
 
+                var attributeValue = a.Value.ToStringValue();
+
                 var spanAttrib = new SpanAttributeEntity
                 {
                     Key = a.Key,
-                    Value = a.Value.ToStringValue()
+                    Value = attributeValue
                 };
                 if (SeenAttributes.Add(spanAttrib)) attributes.Add(spanAttrib);
+
+                var indexEntry = (span.SpanId, a.Key, attributeValue);
+                if (spanAttributeIndexSeen.Add(indexEntry))
+                {
+                    spanAttributeIndexEntries.Add(new SpanAttributeIndexEntity
+                    {
+                        SpanId = span.SpanId,
+                        Key = a.Key,
+                        Value = attributeValue
+                    });
+                }
             }
 
             var spanName = new SpanNameEntity
@@ -89,6 +104,10 @@ public class ModelRepo(
         try
         {
             await spanBulkInserter.InsertAsync(context, spans, CancellationToken.None);
+            if (spanAttributeIndexEntries.Count > 0)
+            {
+                await context.SpanAttributeIndex.AddRangeAsync(spanAttributeIndexEntries);
+            }
             logger.LogInformation("Before save changes");
             await context.SaveChangesAsync();
             logger.LogInformation("After save changes");
@@ -272,6 +291,17 @@ public class ModelRepo(
             spansQuery = spansQuery.Where(span => span.EndTimestamp <= (long)request.EndTime);
         }
 
+        if (!string.IsNullOrWhiteSpace(request.TagName))
+        {
+            var tagName = request.TagName;
+            var tagValue = request.TagValue;
+
+            spansQuery = spansQuery.Where(span => context.SpanAttributeIndex.Any(index =>
+                index.SpanId == span.SpanId &&
+                index.Key == tagName &&
+                (string.IsNullOrWhiteSpace(tagValue) || index.Value == tagValue)));
+        }
+
         var candidates = await spansQuery
             .GroupBy(span => span.TraceId)
             .Select(group => new
@@ -314,11 +344,6 @@ public class ModelRepo(
                 .ToList();
 
             if (traceSpans.Count == 0)
-            {
-                continue;
-            }
-
-            if (!TraceMatchesTagFilter(traceSpans, request.TagName, request.TagValue))
             {
                 continue;
             }
@@ -591,33 +616,6 @@ public class ModelRepo(
         };
     }
 
-    private static bool TraceMatchesTagFilter(IEnumerable<SpanEntity> spans, string tagName, string tagValue)
-    {
-        if (string.IsNullOrWhiteSpace(tagName))
-        {
-            return true;
-        }
-
-        return spans.Any(span => SpanMatchesTag(span, tagName, tagValue));
-    }
-
-    private static bool SpanMatchesTag(SpanEntity span, string tagName, string tagValue)
-    {
-        if (span.AttributeMap is not { Length: > 0 })
-        {
-            return false;
-        }
-
-        if (!string.IsNullOrWhiteSpace(tagValue))
-        {
-            var target = $"{tagName}:{tagValue}";
-            return span.AttributeMap.Any(attribute => string.Equals(attribute, target, StringComparison.Ordinal));
-        }
-
-        var prefix = $"{tagName}:";
-        return span.AttributeMap.Any(attribute => attribute.StartsWith(prefix, StringComparison.Ordinal));
-    }
-
     private static bool SpanHasError(SpanEntity span)
     {
         if (span.AttributeMap is not { Length: > 0 })
@@ -642,5 +640,26 @@ public class ModelRepo(
         return parts.Length == 2
             ? (parts[0], parts[1])
             : (componentId, componentId);
+    }
+
+    private sealed class SpanAttributeIndexComparer : IEqualityComparer<(string SpanId, string Key, string Value)>
+    {
+        public static SpanAttributeIndexComparer Ordinal { get; } = new();
+
+        public bool Equals((string SpanId, string Key, string Value) x, (string SpanId, string Key, string Value) y)
+        {
+            return string.Equals(x.SpanId, y.SpanId, StringComparison.Ordinal) &&
+                   string.Equals(x.Key, y.Key, StringComparison.Ordinal) &&
+                   string.Equals(x.Value, y.Value, StringComparison.Ordinal);
+        }
+
+        public int GetHashCode((string SpanId, string Key, string Value) obj)
+        {
+            var hash = new HashCode();
+            hash.Add(obj.SpanId, StringComparer.Ordinal);
+            hash.Add(obj.Key, StringComparer.Ordinal);
+            hash.Add(obj.Value, StringComparer.Ordinal);
+            return hash.ToHashCode();
+        }
     }
 }

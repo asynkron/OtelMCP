@@ -44,6 +44,11 @@ public class DataServiceTests
         var traceIdBytes = Enumerable.Range(10, 16).Select(i => (byte)i).ToArray();
         var spanIdBytes = Enumerable.Range(1, 8).Select(i => (byte)(i + 40)).ToArray();
         var traceIdHex = Convert.ToHexString(traceIdBytes);
+        var spanIdHex = Convert.ToHexString(spanIdBytes);
+
+        var secondTraceIdBytes = Enumerable.Range(20, 16).Select(i => (byte)i).ToArray();
+        var secondSpanIdBytes = Enumerable.Range(30, 8).Select(i => (byte)i).ToArray();
+        var secondTraceIdHex = Convert.ToHexString(secondTraceIdBytes);
 
         var traceRequest = new ExportTraceServiceRequest
         {
@@ -98,6 +103,54 @@ public class DataServiceTests
 
         await traceClient.ExportAsync(traceRequest);
 
+        var secondTraceRequest = new ExportTraceServiceRequest
+        {
+            ResourceSpans =
+            {
+                new ResourceSpans
+                {
+                    Resource = new Resource
+                    {
+                        Attributes =
+                        {
+                            new KeyValue
+                            {
+                                Key = "service.name",
+                                Value = new AnyValue { StringValue = "search-service" }
+                            }
+                        }
+                    },
+                    ScopeSpans =
+                    {
+                        new ScopeSpans
+                        {
+                            Spans =
+                            {
+                                new Span
+                                {
+                                    TraceId = ByteString.CopyFrom(secondTraceIdBytes),
+                                    SpanId = ByteString.CopyFrom(secondSpanIdBytes),
+                                    Name = "root-operation",
+                                    StartTimeUnixNano = 1_100,
+                                    EndTimeUnixNano = 2_100,
+                                    Attributes =
+                                    {
+                                        new KeyValue
+                                        {
+                                            Key = "http.method",
+                                            Value = new AnyValue { StringValue = "POST" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        await traceClient.ExportAsync(secondTraceRequest);
+
         var logRequest = new ExportLogsServiceRequest
         {
             ResourceLogs =
@@ -145,9 +198,9 @@ public class DataServiceTests
 
         await logsClient.ExportAsync(logRequest);
 
-        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(context =>
-                context.Spans.AnyAsync(span => span.TraceId == traceIdHex)),
-            "trace to be queryable");
+        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(async context =>
+                await context.Spans.CountAsync(span => span.ServiceName == "search-service") >= 2),
+            "traces to be queryable");
 
         await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(context =>
                 context.Logs.AnyAsync(log => log.TraceId == traceIdHex)),
@@ -158,8 +211,18 @@ public class DataServiceTests
         Assert.Contains("root-operation", searchData.SpanNames);
         Assert.Contains("http.method", searchData.TagNames);
 
+        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(context =>
+                context.SpanAttributeIndex.AnyAsync(index =>
+                    index.SpanId == spanIdHex && index.Key == "http.method" && index.Value == "GET")),
+            "span attribute index to capture http.method attribute");
+
+        var tagIndexCount = await _factory.ExecuteDbContextAsync(context =>
+            context.SpanAttributeIndex.CountAsync(index => index.Key == "http.method"));
+        Assert.Equal(2, tagIndexCount);
+
         var tagValues = await dataClient.GetValuesForTagAsync(new GetValuesForTagRequest { TagName = "http.method" });
         Assert.Contains("GET", tagValues.TagValues);
+        Assert.Contains("POST", tagValues.TagValues);
 
         var searchResponse = await dataClient.SearchTracesAsync(new SearchTracesRequest
         {
@@ -176,6 +239,17 @@ public class DataServiceTests
         Assert.NotEmpty(searchResponse.LogCounts);
         Assert.NotEmpty(searchResponse.SpanCounts);
         Assert.Single(traceResult.Logs);
+
+        var postSearchResponse = await dataClient.SearchTracesAsync(new SearchTracesRequest
+        {
+            ServiceName = "search-service",
+            TagName = "http.method",
+            TagValue = "POST",
+            Limit = 5
+        });
+
+        var postResult = Assert.Single(postSearchResponse.Results);
+        Assert.Equal(secondTraceIdHex, postResult.Trace.TraceId);
 
         var serviceMap = await dataClient.GetServiceMapComponentsAsync(new GetServiceMapComponentsRequest());
         Assert.Contains(serviceMap.Components, component => component.ComponentName == "search-service");
