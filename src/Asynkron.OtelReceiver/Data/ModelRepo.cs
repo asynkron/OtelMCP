@@ -1,15 +1,12 @@
-using System.Data;
-using System.Diagnostics;
-using System.Globalization;
-using Microsoft.Extensions.Logging;
-using System.Linq;
-using System.Collections.Generic;
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
+using Asynkron.OtelReceiver.Data.Providers;
 using Google.Protobuf;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
-using NpgsqlTypes;
+using Microsoft.Extensions.Logging;
 using OpenTelemetry.Proto.Logs.V1;
 using TraceLens.Infra;
 using Tracelens.Proto.V1;
@@ -17,7 +14,10 @@ using Metric = OpenTelemetry.Proto.Metrics.V1.Metric;
 
 namespace Asynkron.OtelReceiver.Data;
 
-public class ModelRepo(IDbContextFactory<OtelReceiverContext> contextFactory, ILogger<ModelRepo> logger)
+public class ModelRepo(
+    IDbContextFactory<OtelReceiverContext> contextFactory,
+    ILogger<ModelRepo> logger,
+    ISpanBulkInserter spanBulkInserter)
 {
     private static readonly HashSet<string> BlockedAttributes =
     [
@@ -86,51 +86,7 @@ public class ModelRepo(IDbContextFactory<OtelReceiverContext> contextFactory, IL
 
         try
         {
-            var conn = (NpgsqlConnection)context.Database.GetDbConnection();
-            if (conn.State != ConnectionState.Open) await conn.OpenAsync();
-            await using var trans = await conn.BeginTransactionAsync();
-            await using var writer = await conn.BeginBinaryImportAsync(
-                """
-                COPY "Spans" (
-                        "SpanId",
-                        "StartTimestamp",
-                        "EndTimestamp",
-                        "TraceId",
-                        "ParentSpanId",
-                        "ServiceName",
-                        "OperationName",
-                        "AttributeMap",
-                        "Events",
-                        "Proto") FROM STDIN (FORMAT BINARY)
-                """);
-
-            foreach (var span in spans)
-            {
-                await writer.StartRowAsync();
-                await writer.WriteAsync(span.SpanId, NpgsqlDbType.Text);
-                await writer.WriteAsync(span.StartTimestamp, NpgsqlDbType.Bigint);
-                await writer.WriteAsync(span.EndTimestamp, NpgsqlDbType.Bigint);
-                await writer.WriteAsync(span.TraceId, NpgsqlDbType.Text);
-                await writer.WriteAsync(span.ParentSpanId, NpgsqlDbType.Text);
-                await writer.WriteAsync(span.ServiceName, NpgsqlDbType.Text);
-                await writer.WriteAsync(span.OperationName, NpgsqlDbType.Text);
-                await writer.WriteAsync(span.AttributeMap, NpgsqlDbType.Array | NpgsqlDbType.Text);
-                await writer.WriteAsync(span.Events, NpgsqlDbType.Array | NpgsqlDbType.Text);
-                await writer.WriteAsync(span.Proto, NpgsqlDbType.Bytea);
-            }
-
-            await writer.CompleteAsync();
-            await writer.CloseAsync();
-            await trans.CommitAsync();
-        }
-        catch (Exception x)
-        {
-            logger.LogError(x, "Failed to write spans");
-        }
-
-
-        try
-        {
+            await spanBulkInserter.InsertAsync(context, spans, CancellationToken.None);
             logger.LogInformation("Before save changes");
             await context.SaveChangesAsync();
             logger.LogInformation("After save changes");
