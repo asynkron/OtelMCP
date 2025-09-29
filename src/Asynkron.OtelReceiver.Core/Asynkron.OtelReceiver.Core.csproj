@@ -38,6 +38,10 @@
 
             <Generator>MSBuild:Compile</Generator>
         </Protobuf>
+        <Protobuf Include="receiver_metrics.proto">
+            <Generator>MSBuild:Compile</Generator>
+            <GrpcServices>Both</GrpcServices>
+        </Protobuf>
     </ItemGroup>
 
     <ItemGroup>

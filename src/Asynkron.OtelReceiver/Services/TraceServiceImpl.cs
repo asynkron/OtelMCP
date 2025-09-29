@@ -1,9 +1,11 @@
+using System.Threading;
 using System.Threading.Channels;
 using Grpc.Core;
 using OpenTelemetry.Proto.Collector.Trace.V1;
 using TraceLens.Infra;
 using Tracelens.Proto.V1;
 using Asynkron.OtelReceiver.Data;
+using Asynkron.OtelReceiver.Monitoring;
 
 namespace Asynkron.OtelReceiver.Services;
 
@@ -16,11 +18,12 @@ public class TraceServiceImpl : TraceService.TraceServiceBase
 
     private static long _count;
     private readonly ModelRepo _repo;
+    private readonly IReceiverMetricsCollector _metrics;
 
-
-    public TraceServiceImpl(ModelRepo repo)
+    public TraceServiceImpl(ModelRepo repo, IReceiverMetricsCollector metrics)
     {
         _repo = repo;
+        _metrics = metrics;
 
         RunConsumer();
     }
@@ -30,6 +33,11 @@ public class TraceServiceImpl : TraceService.TraceServiceBase
     {
         try
         {
+            var spanCount = CountSpans(request);
+            if (spanCount > 0)
+            {
+                _metrics.RecordSpansReceived(spanCount);
+            }
             Interlocked.Increment(ref _count);
             await Channel.Writer.WriteAsync(request);
         }
@@ -79,5 +87,19 @@ public class TraceServiceImpl : TraceService.TraceServiceBase
                     Console.WriteLine("Error in trace endpoint: " + x.Message);
                 }
         });
+    }
+
+    private static long CountSpans(ExportTraceServiceRequest request)
+    {
+        long count = 0;
+        foreach (var resourceSpan in request.ResourceSpans)
+        {
+            foreach (var scopeSpan in resourceSpan.ScopeSpans)
+            {
+                count += scopeSpan.Spans.Count;
+            }
+        }
+
+        return count;
     }
 }

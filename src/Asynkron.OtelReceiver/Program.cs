@@ -1,6 +1,7 @@
 using Asynkron.OtelReceiver.Data;
-using Asynkron.OtelReceiver.Services;
 using Asynkron.OtelReceiver.Data.Providers;
+using Asynkron.OtelReceiver.Monitoring;
+using Asynkron.OtelReceiver.Services;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -27,6 +28,8 @@ else
     builder.Services.AddScoped<ISpanBulkInserter, PostgresSpanBulkInserter>();
 }
 
+builder.Services.AddSingleton<IReceiverMetricsCollector, ReceiverMetricsCollector>();
+
 builder.Services.AddGrpc();
 
 builder.Services.AddScoped<ModelRepo>();
@@ -36,6 +39,7 @@ var app = builder.Build();
 app.MapGrpcService<TraceServiceImpl>();
 app.MapGrpcService<LogsServiceImpl>();
 app.MapGrpcService<MetricsServiceImpl>();
+app.MapGrpcService<ReceiverMetricsServiceImpl>();
 
 app.MapGet("/", () => "Asynkron Otel Receiver");
 
