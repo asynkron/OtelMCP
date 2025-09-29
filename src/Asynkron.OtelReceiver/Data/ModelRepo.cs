@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Asynkron.OtelReceiver.Data.Providers;
@@ -253,10 +252,23 @@ public class ModelRepo(
 
         var spansQuery = context.Spans.AsQueryable();
 
-        var spanPredicate = BuildSpanPredicate(request.Filter);
-        if (spanPredicate is not null)
+        var serviceNames = new HashSet<string>(StringComparer.Ordinal);
+        var spanNames = new HashSet<string>(StringComparer.Ordinal);
+        CollectFilterHints(request.Filter, serviceNames, spanNames);
+
+        if (serviceNames.Count > 0 && spanNames.Count == 0)
         {
-            spansQuery = spansQuery.Where(spanPredicate);
+            spansQuery = spansQuery.Where(span => serviceNames.Contains(span.ServiceName));
+        }
+        else if (spanNames.Count > 0 && serviceNames.Count == 0)
+        {
+            spansQuery = spansQuery.Where(span => spanNames.Contains(span.OperationName));
+        }
+        else if (serviceNames.Count > 0 && spanNames.Count > 0)
+        {
+            spansQuery = spansQuery.Where(span =>
+                serviceNames.Contains(span.ServiceName) ||
+                spanNames.Contains(span.OperationName));
         }
 
         if (request.StartTime != 0)
@@ -317,11 +329,18 @@ public class ModelRepo(
                 continue;
             }
 
-            selectedTraceIds.Add(traceId);
-
             var traceLogs = logs
                 .Where(log => log.TraceId == traceId)
                 .ToList();
+
+            var clauseMap = new Dictionary<string, AttributeClauseMatch>(StringComparer.Ordinal);
+            var traceContext = new TraceContext(traceSpans, traceLogs);
+            if (!EvaluateTraceFilter(request.Filter, traceContext, clauseMap))
+            {
+                continue;
+            }
+
+            selectedTraceIds.Add(traceId);
 
             if (!string.IsNullOrWhiteSpace(logSearch))
             {
@@ -354,6 +373,25 @@ public class ModelRepo(
             foreach (var log in traceLogs)
             {
                 traceResult.Logs.Add(LogRecord.Parser.ParseFrom(log.Proto));
+            }
+
+            foreach (var clause in clauseMap.Values.OrderBy(match => match.Clause, StringComparer.Ordinal))
+            {
+                traceResult.AttributeClauses.Add(clause);
+            }
+
+            foreach (var span in traceSpans)
+            {
+                if (span.Proto is null || span.Proto.Length == 0)
+                {
+                    continue;
+                }
+
+                var stored = SpanWithService.Parser.ParseFrom(span.Proto);
+                if (stored.Span is not null)
+                {
+                    traceResult.Spans.Add(stored.Span);
+                }
             }
 
             response.Results.Add(traceResult);
@@ -585,169 +623,293 @@ public class ModelRepo(
         };
     }
 
-    private static Expression<Func<SpanEntity, bool>>? BuildSpanPredicate(TraceFilterExpression? expression)
+    private static void CollectFilterHints(
+        TraceFilterExpression? expression,
+        ISet<string> serviceNames,
+        ISet<string> spanNames)
     {
-        return expression?.ExpressionCase switch
+        if (expression is null)
         {
-            TraceFilterExpression.ExpressionOneofCase.Attribute => BuildAttributePredicate(expression.Attribute),
-            TraceFilterExpression.ExpressionOneofCase.Service => BuildServicePredicate(expression.Service),
-            TraceFilterExpression.ExpressionOneofCase.SpanName => BuildSpanNamePredicate(expression.SpanName),
-            TraceFilterExpression.ExpressionOneofCase.Composite => BuildCompositePredicate(expression.Composite),
-            _ => null
+            return;
+        }
+
+        switch (expression.ExpressionCase)
+        {
+            case TraceFilterExpression.ExpressionOneofCase.Service when
+                !string.IsNullOrWhiteSpace(expression.Service.Name):
+                serviceNames.Add(expression.Service.Name);
+                break;
+            case TraceFilterExpression.ExpressionOneofCase.SpanName when
+                !string.IsNullOrWhiteSpace(expression.SpanName.Name):
+                spanNames.Add(expression.SpanName.Name);
+                break;
+            case TraceFilterExpression.ExpressionOneofCase.Composite:
+                foreach (var child in expression.Composite.Expressions)
+                {
+                    CollectFilterHints(child, serviceNames, spanNames);
+                }
+
+                break;
+        }
+    }
+
+    private static bool EvaluateTraceFilter(
+        TraceFilterExpression? expression,
+        TraceContext traceContext,
+        IDictionary<string, AttributeClauseMatch> clauseMap)
+    {
+        if (expression is null)
+        {
+            return true;
+        }
+
+        return expression.ExpressionCase switch
+        {
+            TraceFilterExpression.ExpressionOneofCase.Attribute =>
+                EvaluateAttributeFilter(expression.Attribute, traceContext, clauseMap),
+            TraceFilterExpression.ExpressionOneofCase.Service =>
+                EvaluateServiceFilter(expression.Service, traceContext),
+            TraceFilterExpression.ExpressionOneofCase.SpanName =>
+                EvaluateSpanNameFilter(expression.SpanName, traceContext),
+            TraceFilterExpression.ExpressionOneofCase.Composite =>
+                EvaluateCompositeFilter(expression.Composite, traceContext, clauseMap),
+            _ => true
         };
     }
 
-    private static Expression<Func<SpanEntity, bool>>? BuildCompositePredicate(TraceFilterComposite composite)
+    private static bool EvaluateCompositeFilter(
+        TraceFilterComposite composite,
+        TraceContext traceContext,
+        IDictionary<string, AttributeClauseMatch> clauseMap)
     {
-        if (composite is null)
+        if (composite is null || composite.Expressions.Count == 0)
         {
-            return null;
+            return true;
         }
 
-        var childPredicates = composite.Expressions
-            .Select(BuildSpanPredicate)
-            .Where(predicate => predicate is not null)
-            .Cast<Expression<Func<SpanEntity, bool>>>()
-            .ToList();
+        var useOr = composite.Operator == TraceFilterComposite.Types.Operator.Or;
 
-        if (childPredicates.Count == 0)
+        var result = useOr ? false : true;
+
+        foreach (var expression in composite.Expressions)
         {
-            return null;
+            var childResult = EvaluateTraceFilter(expression, traceContext, clauseMap);
+            if (useOr)
+            {
+                result |= childResult;
+            }
+            else
+            {
+                result &= childResult;
+            }
         }
 
-        var @operator = composite.Operator == TraceFilterComposite.Types.Operator.Or
-            ? TraceFilterComposite.Types.Operator.Or
-            : TraceFilterComposite.Types.Operator.And;
-
-        return CombinePredicates(childPredicates, @operator);
+        return result;
     }
 
-    private static Expression<Func<SpanEntity, bool>>? BuildAttributePredicate(AttributeFilter filter)
+    private static bool EvaluateServiceFilter(ServiceFilter filter, TraceContext traceContext)
+    {
+        if (filter is null || string.IsNullOrWhiteSpace(filter.Name))
+        {
+            return false;
+        }
+
+        return traceContext.Spans.Any(span =>
+            string.Equals(span.ServiceName, filter.Name, StringComparison.Ordinal));
+    }
+
+    private static bool EvaluateSpanNameFilter(SpanNameFilter filter, TraceContext traceContext)
+    {
+        if (filter is null || string.IsNullOrWhiteSpace(filter.Name))
+        {
+            return false;
+        }
+
+        return traceContext.Spans.Any(span =>
+            string.Equals(span.OperationName, filter.Name, StringComparison.Ordinal));
+    }
+
+    private static bool EvaluateAttributeFilter(
+        AttributeFilter filter,
+        TraceContext traceContext,
+        IDictionary<string, AttributeClauseMatch> clauseMap)
     {
         if (filter is null || string.IsNullOrWhiteSpace(filter.Key))
         {
-            return null;
+            return false;
         }
 
-        if (filter.Target != AttributeFilterTarget.Unspecified &&
-            filter.Target != AttributeFilterTarget.Span)
+        var target = filter.Target == AttributeFilterTarget.Log
+            ? AttributeFilterTarget.Log
+            : AttributeFilterTarget.Span;
+
+        var operation = filter.Operator switch
         {
-            return null;
-        }
-
-        var parameter = Expression.Parameter(typeof(SpanEntity), "span");
-        var attributeMap = Expression.Property(parameter, nameof(SpanEntity.AttributeMap));
-        var notNull = Expression.NotEqual(attributeMap, Expression.Constant(null, typeof(string[])));
-
-        var operation = filter.Operator == AttributeFilterOperator.Unspecified
-            ? (string.IsNullOrEmpty(filter.Value)
+            AttributeFilterOperator.Equals => AttributeFilterOperator.Equals,
+            AttributeFilterOperator.Exists => AttributeFilterOperator.Exists,
+            AttributeFilterOperator.Unspecified => string.IsNullOrEmpty(filter.Value)
                 ? AttributeFilterOperator.Exists
-                : AttributeFilterOperator.Equals)
-            : filter.Operator;
+                : AttributeFilterOperator.Equals,
+            _ => AttributeFilterOperator.Equals
+        };
 
-        Expression body;
-
-        switch (operation)
+        if (operation == AttributeFilterOperator.Equals && string.IsNullOrEmpty(filter.Value))
         {
-            case AttributeFilterOperator.Equals:
+            return false;
+        }
+
+        var clauseKey = BuildClauseKey(filter.Key!, filter.Value, target, operation);
+
+        if (!clauseMap.TryGetValue(clauseKey, out var clause))
+        {
+            clause = new AttributeClauseMatch
             {
-                if (string.IsNullOrEmpty(filter.Value))
-                {
-                    return null;
-                }
-
-                var target = Expression.Constant($"{filter.Key}:{filter.Value}", typeof(string));
-                var containsMethod = typeof(Enumerable).GetMethods()
-                    .Single(m => m.Name == nameof(Enumerable.Contains) && m.GetParameters().Length == 2)
-                    .MakeGenericMethod(typeof(string));
-                var containsCall = Expression.Call(containsMethod, attributeMap, target);
-                body = Expression.AndAlso(notNull, containsCall);
-                break;
-            }
-            case AttributeFilterOperator.Exists:
-            {
-                var prefix = Expression.Constant($"{filter.Key}:", typeof(string));
-                var attributeParameter = Expression.Parameter(typeof(string), "attribute");
-                var startsWithMethod = typeof(string).GetMethod(nameof(string.StartsWith), new[] { typeof(string) })!;
-                var startsWithCall = Expression.Call(attributeParameter, startsWithMethod, prefix);
-                var lambda = Expression.Lambda<Func<string, bool>>(startsWithCall, attributeParameter);
-                var anyMethod = typeof(Enumerable).GetMethods()
-                    .Single(m => m.Name == nameof(Enumerable.Any) && m.GetParameters().Length == 2)
-                    .MakeGenericMethod(typeof(string));
-                var anyCall = Expression.Call(anyMethod, attributeMap, lambda);
-                body = Expression.AndAlso(notNull, anyCall);
-                break;
-            }
-            default:
-                return null;
+                Clause = clauseKey
+            };
+            clauseMap[clauseKey] = clause;
         }
 
-        return Expression.Lambda<Func<SpanEntity, bool>>(body, parameter);
-    }
+        var matches = target == AttributeFilterTarget.Log
+            ? EvaluateLogAttributeMatches(traceContext.Logs, filter.Key!, filter.Value, operation)
+            : EvaluateSpanAttributeMatches(traceContext.Spans, filter.Key!, filter.Value, operation);
 
-    private static Expression<Func<SpanEntity, bool>>? BuildServicePredicate(ServiceFilter filter)
-    {
-        if (filter is null || string.IsNullOrWhiteSpace(filter.Name))
+        if (matches.Count > 0)
         {
-            return null;
+            clause.Satisfied = true;
+            clause.Matches.AddRange(matches);
+            return true;
         }
 
-        return span => span.ServiceName == filter.Name;
+        return false;
     }
 
-    private static Expression<Func<SpanEntity, bool>>? BuildSpanNamePredicate(SpanNameFilter filter)
+    private static List<AttributeMatch> EvaluateSpanAttributeMatches(
+        IReadOnlyList<SpanEntity> spans,
+        string key,
+        string? value,
+        AttributeFilterOperator operation)
     {
-        if (filter is null || string.IsNullOrWhiteSpace(filter.Name))
+        var matches = new List<AttributeMatch>();
+
+        foreach (var span in spans)
         {
-            return null;
-        }
-
-        return span => span.OperationName == filter.Name;
-    }
-
-    private static Expression<Func<SpanEntity, bool>>? CombinePredicates(
-        IReadOnlyList<Expression<Func<SpanEntity, bool>>> predicates,
-        TraceFilterComposite.Types.Operator @operator)
-    {
-        var parameter = Expression.Parameter(typeof(SpanEntity), "span");
-
-        Expression? body = null;
-
-        foreach (var predicate in predicates)
-        {
-            var visitor = new ReplaceParameterVisitor(predicate.Parameters[0], parameter);
-            var visited = visitor.Visit(predicate.Body);
-            if (visited is null)
+            if (span.AttributeMap is not { Length: > 0 })
             {
                 continue;
             }
 
-            body = body is null
-                ? visited
-                : @operator == TraceFilterComposite.Types.Operator.Or
-                    ? Expression.OrElse(body, visited)
-                    : Expression.AndAlso(body, visited);
+            if (operation == AttributeFilterOperator.Equals)
+            {
+                var target = $"{key}:{value}";
+                if (span.AttributeMap.Contains(target))
+                {
+                    matches.Add(new AttributeMatch
+                    {
+                        SpanId = span.SpanId,
+                        Key = key,
+                        Value = value ?? string.Empty
+                    });
+                }
+            }
+            else
+            {
+                foreach (var attribute in span.AttributeMap)
+                {
+                    if (!attribute.StartsWith($"{key}:", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    var matchValue = attribute.Length > key.Length + 1
+                        ? attribute[(key.Length + 1)..]
+                        : string.Empty;
+
+                    matches.Add(new AttributeMatch
+                    {
+                        SpanId = span.SpanId,
+                        Key = key,
+                        Value = matchValue
+                    });
+                }
+            }
         }
 
-        return body is null
-            ? null
-            : Expression.Lambda<Func<SpanEntity, bool>>(body, parameter);
+        return matches;
     }
 
-    private sealed class ReplaceParameterVisitor : ExpressionVisitor
+    private static List<AttributeMatch> EvaluateLogAttributeMatches(
+        IReadOnlyList<LogEntity> logs,
+        string key,
+        string? value,
+        AttributeFilterOperator operation)
     {
-        private readonly ParameterExpression _source;
-        private readonly ParameterExpression _target;
+        var matches = new List<AttributeMatch>();
 
-        public ReplaceParameterVisitor(ParameterExpression source, ParameterExpression target)
+        foreach (var log in logs)
         {
-            _source = source;
-            _target = target;
+            if (log.AttributeMap is not { Length: > 0 })
+            {
+                continue;
+            }
+
+            if (operation == AttributeFilterOperator.Equals)
+            {
+                var target = $"{key}:{value}";
+                if (log.AttributeMap.Contains(target))
+                {
+                    matches.Add(new AttributeMatch
+                    {
+                        SpanId = log.SpanId,
+                        Key = key,
+                        Value = value ?? string.Empty
+                    });
+                }
+            }
+            else
+            {
+                foreach (var attribute in log.AttributeMap)
+                {
+                    if (!attribute.StartsWith($"{key}:", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    var matchValue = attribute.Length > key.Length + 1
+                        ? attribute[(key.Length + 1)..]
+                        : string.Empty;
+
+                    matches.Add(new AttributeMatch
+                    {
+                        SpanId = log.SpanId,
+                        Key = key,
+                        Value = matchValue
+                    });
+                }
+            }
         }
 
-        protected override Expression VisitParameter(ParameterExpression node)
-            => node == _source ? _target : base.VisitParameter(node);
+        return matches;
     }
+
+    private static string BuildClauseKey(
+        string key,
+        string? value,
+        AttributeFilterTarget target,
+        AttributeFilterOperator operation)
+    {
+        var prefix = target == AttributeFilterTarget.Log ? "log" : "tag";
+
+        if (operation == AttributeFilterOperator.Equals && !string.IsNullOrEmpty(value))
+        {
+            return $"{prefix}:{key}={value}";
+        }
+
+        return $"{prefix}:{key}";
+    }
+
+    private readonly record struct TraceContext(
+        IReadOnlyList<SpanEntity> Spans,
+        IReadOnlyList<LogEntity> Logs);
 
     private static bool SpanHasError(SpanEntity span)
     {
