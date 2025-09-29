@@ -147,21 +147,40 @@ public class ModelRepo(
 
             //TODO: add formatted body
             var r = t.resourceLog;
+            var attributes = new List<LogAttributeEntity>();
+
+            foreach (var attribute in l.Attributes)
+            {
+                attributes.Add(new LogAttributeEntity
+                {
+                    Key = attribute.Key,
+                    Value = attribute.Value.ToStringValue(),
+                    Source = LogAttributeSource.Record
+                });
+            }
+
+            foreach (var attribute in r.Resource.Attributes)
+            {
+                attributes.Add(new LogAttributeEntity
+                {
+                    Key = attribute.Key,
+                    Value = attribute.Value.ToStringValue(),
+                    Source = LogAttributeSource.Resource
+                });
+            }
+
             var log = new LogEntity
             {
                 TraceId = l.TraceId.ToHex(),
                 SpanId = l.SpanId.ToHex(),
                 Timestamp = (long)l.TimeUnixNano,
                 ObservedTimestamp = (long)l.ObservedTimeUnixNano,
-                AttributeMap = l.Attributes.Select(x => $"{x.Key}:{x.Value.ToStringValue()}")
-                    .ToArray(),
                 SeverityText = l.SeverityText,
                 SeverityNumber = (byte)l.SeverityNumber,
                 Body = FormatLog(l),
                 RawBody = l.Body.StringValue,
-                ResourceMap = r.Resource.Attributes
-                    .Select(x => $"{x.Key}:{x.Value.ToStringValue()}").ToArray(),
                 Proto = l.ToByteArray(),
+                Attributes = attributes
             };
             logs.Add(log);
         }
@@ -303,9 +322,36 @@ public class ModelRepo(
             .Where(span => candidateIds.Contains(span.TraceId))
             .ToListAsync();
 
-        var logs = await context.Logs
-            .Where(log => candidateIds.Contains(log.TraceId))
+        var logSearch = request.LogFilter?.BodyContains;
+        var normalizedLogSearch = string.IsNullOrWhiteSpace(logSearch)
+            ? null
+            : logSearch.ToLowerInvariant();
+
+        var requiredLogFilters = new List<AttributeFilter>();
+        CollectRequiredLogAttributeFilters(request.Filter, requiredLogFilters, true);
+
+        IQueryable<LogEntity> logsQuery = context.Logs
+            .Where(log => candidateIds.Contains(log.TraceId));
+
+        if (normalizedLogSearch is not null)
+        {
+            logsQuery = logsQuery.Where(log =>
+                log.RawBody != null &&
+                EF.Functions.Like(log.RawBody.ToLower(), $"%{normalizedLogSearch}%"));
+        }
+
+        foreach (var filter in requiredLogFilters)
+        {
+            logsQuery = ApplyLogAttributeFilter(logsQuery, filter);
+        }
+
+        var logs = await logsQuery
+            .Include(log => log.Attributes)
             .ToListAsync();
+
+        var logsByTrace = logs
+            .GroupBy(log => log.TraceId)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
 
         var traceOrder = candidates
             .OrderByDescending(group => group.Start)
@@ -314,8 +360,6 @@ public class ModelRepo(
 
         var response = new SearchTracesResponse();
         var selectedTraceIds = new List<string>();
-
-        var logSearch = request.LogFilter?.BodyContains;
 
         foreach (var traceId in traceOrder)
         {
@@ -329,9 +373,9 @@ public class ModelRepo(
                 continue;
             }
 
-            var traceLogs = logs
-                .Where(log => log.TraceId == traceId)
-                .ToList();
+            var traceLogs = logsByTrace.TryGetValue(traceId, out var groupedLogs)
+                ? groupedLogs
+                : new List<LogEntity>();
 
             var clauseMap = new Dictionary<string, AttributeClauseMatch>(StringComparer.Ordinal);
             var traceContext = new TraceContext(traceSpans, traceLogs);
@@ -342,10 +386,10 @@ public class ModelRepo(
 
             selectedTraceIds.Add(traceId);
 
-            if (!string.IsNullOrWhiteSpace(logSearch))
+            if (normalizedLogSearch is not null)
             {
                 traceLogs = traceLogs
-                    .Where(log => log.RawBody?.Contains(logSearch, StringComparison.OrdinalIgnoreCase) ?? false)
+                    .Where(log => log.RawBody?.Contains(logSearch!, StringComparison.OrdinalIgnoreCase) ?? false)
                     .ToList();
             }
 
@@ -404,8 +448,8 @@ public class ModelRepo(
 
         var logCounts = logs
             .Where(log => selectedTraceIds.Contains(log.TraceId))
-            .Where(log => string.IsNullOrWhiteSpace(logSearch) ||
-                          (log.RawBody?.Contains(logSearch, StringComparison.OrdinalIgnoreCase) ?? false))
+            .Where(log => normalizedLogSearch is null ||
+                          (log.RawBody?.Contains(logSearch!, StringComparison.OrdinalIgnoreCase) ?? false))
             .GroupBy(log => log.RawBody ?? string.Empty)
             .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
 
@@ -653,6 +697,65 @@ public class ModelRepo(
         }
     }
 
+    private static void CollectRequiredLogAttributeFilters(
+        TraceFilterExpression? expression,
+        ICollection<AttributeFilter> filters,
+        bool isRequired)
+    {
+        if (expression is null || !isRequired && expression.ExpressionCase != TraceFilterExpression.ExpressionOneofCase.Composite)
+        {
+            return;
+        }
+
+        switch (expression.ExpressionCase)
+        {
+            case TraceFilterExpression.ExpressionOneofCase.Attribute when
+                isRequired &&
+                expression.Attribute is { Target: AttributeFilterTarget.Log } attribute &&
+                !string.IsNullOrWhiteSpace(attribute.Key):
+                filters.Add(attribute);
+                break;
+            case TraceFilterExpression.ExpressionOneofCase.Composite:
+                var composite = expression.Composite;
+                if (composite is null || composite.Expressions.Count == 0)
+                {
+                    return;
+                }
+
+                var isOr = composite.Operator == TraceFilterComposite.Types.Operator.Or;
+                foreach (var child in composite.Expressions)
+                {
+                    CollectRequiredLogAttributeFilters(child, filters, isRequired && !isOr);
+                }
+
+                break;
+        }
+    }
+
+    private static IQueryable<LogEntity> ApplyLogAttributeFilter(
+        IQueryable<LogEntity> query,
+        AttributeFilter filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter.Key))
+        {
+            return query;
+        }
+
+        var operation = filter.Operator switch
+        {
+            AttributeFilterOperator.Equals => AttributeFilterOperator.Equals,
+            AttributeFilterOperator.Exists => AttributeFilterOperator.Exists,
+            _ => string.IsNullOrEmpty(filter.Value)
+                ? AttributeFilterOperator.Exists
+                : AttributeFilterOperator.Equals
+        };
+
+        return operation == AttributeFilterOperator.Equals
+            ? query.Where(log => log.Attributes.Any(attribute =>
+                attribute.Key == filter.Key && attribute.Value == filter.Value))
+            : query.Where(log => log.Attributes.Any(attribute => attribute.Key == filter.Key));
+    }
+
     private static bool EvaluateTraceFilter(
         TraceFilterExpression? expression,
         TraceContext traceContext,
@@ -847,16 +950,25 @@ public class ModelRepo(
 
         foreach (var log in logs)
         {
-            if (log.AttributeMap is not { Length: > 0 })
+            if (log.Attributes is not { Count: > 0 })
             {
                 continue;
             }
 
             if (operation == AttributeFilterOperator.Equals)
             {
-                var target = $"{key}:{value}";
-                if (log.AttributeMap.Contains(target))
+                foreach (var attribute in log.Attributes)
                 {
+                    if (!string.Equals(attribute.Key, key, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    if (!string.Equals(attribute.Value, value, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
                     matches.Add(new AttributeMatch
                     {
                         SpanId = log.SpanId,
@@ -867,22 +979,18 @@ public class ModelRepo(
             }
             else
             {
-                foreach (var attribute in log.AttributeMap)
+                foreach (var attribute in log.Attributes)
                 {
-                    if (!attribute.StartsWith($"{key}:", StringComparison.Ordinal))
+                    if (!string.Equals(attribute.Key, key, StringComparison.Ordinal))
                     {
                         continue;
                     }
-
-                    var matchValue = attribute.Length > key.Length + 1
-                        ? attribute[(key.Length + 1)..]
-                        : string.Empty;
 
                     matches.Add(new AttributeMatch
                     {
                         SpanId = log.SpanId,
                         Key = key,
-                        Value = matchValue
+                        Value = attribute.Value ?? string.Empty
                     });
                 }
             }

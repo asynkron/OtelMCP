@@ -2,6 +2,7 @@
 using Asynkron.OtelReceiver.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -10,9 +11,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Asynkron.OtelReceiver.Migrations
 {
     [DbContext(typeof(OtelReceiverContext))]
-    partial class OtelReceiverContextModelSnapshot : ModelSnapshot
+    [Migration("20250929172403_LogAttributeIndexing")]
+    partial class LogAttributeIndexing
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
