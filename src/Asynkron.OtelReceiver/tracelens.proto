@@ -89,6 +89,8 @@ message ServiceFilter {
 
 message SpanNameFilter {
   string name = 1;
+  string log_search = 8;
+  bool include_span_protos = 9;
 }
 
 message SpanOverview {
@@ -105,9 +107,23 @@ message TraceOverview {
   bool has_error = 7;
 }
 
+message AttributeMatch {
+  string span_id = 1;
+  string key = 2;
+  string value = 3;
+}
+
+message AttributeClauseMatch {
+  string clause = 1;
+  bool satisfied = 2;
+  repeated AttributeMatch matches = 3;
+}
+
 message SearchTraceResult {
   TraceOverview trace = 1;
   repeated opentelemetry.proto.logs.v1.LogRecord logs = 2;
+  repeated AttributeClauseMatch attribute_clauses = 3;
+  repeated opentelemetry.proto.trace.v1.Span spans = 4;
 }
 
 message SearchTracesResponse {

@@ -44,6 +44,7 @@ public class DataServiceTests
         var traceIdBytes = Enumerable.Range(10, 16).Select(i => (byte)i).ToArray();
         var spanIdBytes = Enumerable.Range(1, 8).Select(i => (byte)(i + 40)).ToArray();
         var traceIdHex = Convert.ToHexString(traceIdBytes);
+        var spanIdHex = Convert.ToHexString(spanIdBytes);
 
         var traceRequest = new ExportTraceServiceRequest
         {
@@ -194,6 +195,17 @@ public class DataServiceTests
         Assert.Equal(traceIdHex, traceResult.Trace.TraceId);
         Assert.NotEmpty(traceResult.Trace.Spans);
         Assert.All(traceResult.Trace.Spans, span => Assert.Equal("search-service", span.ServiceName));
+        var clause = Assert.Single(traceResult.AttributeClauses);
+        Assert.True(clause.Satisfied);
+        Assert.Equal("tag:http.method=GET", clause.Clause);
+        var match = Assert.Single(clause.Matches);
+        Assert.Equal(spanIdHex, match.SpanId);
+        Assert.Equal("http.method", match.Key);
+        Assert.Equal("GET", match.Value);
+        Assert.NotEmpty(traceResult.Spans);
+        Assert.Equal("root-operation", traceResult.Spans[0].Name);
+        Assert.Equal(traceIdBytes, traceResult.Spans[0].TraceId.ToByteArray());
+        Assert.Equal(spanIdBytes, traceResult.Spans[0].SpanId.ToByteArray());
         Assert.NotEmpty(searchResponse.LogCounts);
         Assert.NotEmpty(searchResponse.SpanCounts);
         Assert.Single(traceResult.Logs);
