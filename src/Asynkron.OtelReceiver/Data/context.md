@@ -14,5 +14,6 @@ The data layer converts OTLP payloads into persisted records and exposes read/wr
 - `ModelRepo.SaveTrace` writes spans via `ISpanBulkInserter`, updates attribute/name lookup tables with conflict-tolerant raw SQL, and records ingestion counters.
 - `SaveLogs` and `SaveMetrics` transform OTLP structures into relational rows while computing derived attributes (`AttributeMap`, formatting log bodies).
 - Snapshot and metadata endpoints support TraceLens visualisation features (see [`../TraceLens/context.md`](../TraceLens/context.md)).
+- `ModelRepo.SearchTraces` accepts the TraceLens filter expression tree (see `tracelens.proto`) and translates span-level attribute/service predicates into SQL so composite AND/OR searches are evaluated in the database before results are hydrated.
 
 When changing entity shape or persistence semantics, update this context alongside the relevant migration summary in [`../Migrations/context.md`](../Migrations/context.md).

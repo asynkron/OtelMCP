@@ -163,10 +163,31 @@ public class DataServiceTests
 
         var searchResponse = await dataClient.SearchTracesAsync(new SearchTracesRequest
         {
-            ServiceName = "search-service",
-            TagName = "http.method",
-            TagValue = "GET",
-            Limit = 5
+            Limit = 5,
+            Filter = new TraceFilterExpression
+            {
+                Composite = new TraceFilterComposite
+                {
+                    Operator = TraceFilterComposite.Types.Operator.And,
+                    Expressions =
+                    {
+                        new TraceFilterExpression
+                        {
+                            Service = new ServiceFilter { Name = "search-service" }
+                        },
+                        new TraceFilterExpression
+                        {
+                            Attribute = new AttributeFilter
+                            {
+                                Key = "http.method",
+                                Value = "GET",
+                                Operator = AttributeFilterOperator.Equals,
+                                Target = AttributeFilterTarget.Span
+                            }
+                        }
+                    }
+                }
+            }
         });
 
         var traceResult = Assert.Single(searchResponse.Results);
@@ -200,6 +221,195 @@ public class DataServiceTests
         Assert.Equal("search-service", metadata.GroupName);
         Assert.Equal("search-service", metadata.ComponentName);
         Assert.Equal("Service", metadata.ComponentKind);
+    }
+
+    [Fact]
+    public async Task SearchTraces_SupportsCompositeAttributeFilters()
+    {
+        using var channel = _factory.CreateGrpcChannel();
+        var traceClient = new TraceService.TraceServiceClient(channel);
+        var dataClient = new DataService.DataServiceClient(channel);
+
+        var traces = new[]
+        {
+            new
+            {
+                TraceIdBytes = Enumerable.Range(60, 16).Select(i => (byte)i).ToArray(),
+                SpanIdBytes = Enumerable.Range(120, 8).Select(i => (byte)i).ToArray(),
+                Method = "GET",
+                Status = "200"
+            },
+            new
+            {
+                TraceIdBytes = Enumerable.Range(90, 16).Select(i => (byte)i).ToArray(),
+                SpanIdBytes = Enumerable.Range(160, 8).Select(i => (byte)i).ToArray(),
+                Method = "POST",
+                Status = "500"
+            }
+        };
+
+        var traceRequest = new ExportTraceServiceRequest();
+        foreach (var trace in traces)
+        {
+            traceRequest.ResourceSpans.Add(new ResourceSpans
+            {
+                Resource = new Resource
+                {
+                    Attributes =
+                    {
+                        new KeyValue
+                        {
+                            Key = "service.name",
+                            Value = new AnyValue { StringValue = "filter-service" }
+                        }
+                    }
+                },
+                ScopeSpans =
+                {
+                    new ScopeSpans
+                    {
+                        Spans =
+                        {
+                            new Span
+                            {
+                                TraceId = ByteString.CopyFrom(trace.TraceIdBytes),
+                                SpanId = ByteString.CopyFrom(trace.SpanIdBytes),
+                                Name = $"{trace.Method}-operation",
+                                StartTimeUnixNano = 10_000,
+                                EndTimeUnixNano = 20_000,
+                                Attributes =
+                                {
+                                    new KeyValue
+                                    {
+                                        Key = "http.method",
+                                        Value = new AnyValue { StringValue = trace.Method }
+                                    },
+                                    new KeyValue
+                                    {
+                                        Key = "http.status_code",
+                                        Value = new AnyValue { StringValue = trace.Status }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        await traceClient.ExportAsync(traceRequest);
+
+        var traceIds = traces
+            .Select(trace => Convert.ToHexString(trace.TraceIdBytes))
+            .ToArray();
+
+        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(async context =>
+                (await context.Spans.CountAsync(span => traceIds.Contains(span.TraceId))) == traceIds.Length),
+            "composite-filter traces to be queryable");
+
+        var orFilter = new TraceFilterExpression
+        {
+            Composite = new TraceFilterComposite
+            {
+                Operator = TraceFilterComposite.Types.Operator.And,
+                Expressions =
+                {
+                    new TraceFilterExpression
+                    {
+                        Service = new ServiceFilter { Name = "filter-service" }
+                    },
+                    new TraceFilterExpression
+                    {
+                        Composite = new TraceFilterComposite
+                        {
+                            Operator = TraceFilterComposite.Types.Operator.Or,
+                            Expressions =
+                            {
+                                new TraceFilterExpression
+                                {
+                                    Attribute = new AttributeFilter
+                                    {
+                                        Key = "http.method",
+                                        Value = "GET",
+                                        Operator = AttributeFilterOperator.Equals
+                                    }
+                                },
+                                new TraceFilterExpression
+                                {
+                                    Attribute = new AttributeFilter
+                                    {
+                                        Key = "http.method",
+                                        Value = "POST",
+                                        Operator = AttributeFilterOperator.Equals
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        var orResponse = await dataClient.SearchTracesAsync(new SearchTracesRequest
+        {
+            Limit = 10,
+            Filter = orFilter
+        });
+
+        Assert.Equal(traceIds.OrderBy(id => id),
+            orResponse.Results.Select(result => result.Trace.TraceId).OrderBy(id => id));
+
+        var andFilter = new TraceFilterExpression
+        {
+            Composite = new TraceFilterComposite
+            {
+                Operator = TraceFilterComposite.Types.Operator.And,
+                Expressions =
+                {
+                    new TraceFilterExpression
+                    {
+                        Service = new ServiceFilter { Name = "filter-service" }
+                    },
+                    new TraceFilterExpression
+                    {
+                        Composite = new TraceFilterComposite
+                        {
+                            Operator = TraceFilterComposite.Types.Operator.And,
+                            Expressions =
+                            {
+                                new TraceFilterExpression
+                                {
+                                    Attribute = new AttributeFilter
+                                    {
+                                        Key = "http.method",
+                                        Value = "GET",
+                                        Operator = AttributeFilterOperator.Equals
+                                    }
+                                },
+                                new TraceFilterExpression
+                                {
+                                    Attribute = new AttributeFilter
+                                    {
+                                        Key = "http.status_code",
+                                        Value = "200",
+                                        Operator = AttributeFilterOperator.Equals
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        var andResponse = await dataClient.SearchTracesAsync(new SearchTracesRequest
+        {
+            Limit = 10,
+            Filter = andFilter
+        });
+
+        var singleTrace = Assert.Single(andResponse.Results);
+        Assert.Equal(traceIds[0], singleTrace.Trace.TraceId);
     }
 
     private static async Task WaitForAsync(Func<Task<bool>> predicate, string failureMessage)

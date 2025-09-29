@@ -5,5 +5,6 @@ This folder collects user-facing operational guides, integration notes, and rese
 Current entries:
 
 - [`aspire-sample-integration.md`](aspire-sample-integration.md) – step-by-step instructions for running the vendored .NET Aspire Shop sample against the receiver to generate realistic OTLP traffic.
+- [`tracelens-search.md`](tracelens-search.md) – outlines the composable `SearchTraces` filter expression so API consumers can combine service and attribute predicates with AND/OR logic.
 
 Add a new document whenever you complete an investigation whose results will be referenced again. Keep filenames descriptive and link to them from parent `context.md` files when relevant.
