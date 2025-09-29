@@ -307,8 +307,23 @@ public class OtelGrpcIngestionTests
                                         {
                                             new NumberDataPoint
                                             {
-                                                TimeUnixNano = 500,
+                                                StartTimeUnixNano = 100UL,
+                                                TimeUnixNano = 500UL,
                                                 AsDouble = 42.0,
+                                                Attributes =
+                                                {
+                                                    new KeyValue
+                                                    {
+                                                        Key = "stage",
+                                                        Value = new AnyValue { StringValue = "test" }
+                                                    }
+                                                }
+                                            },
+                                            new NumberDataPoint
+                                            {
+                                                StartTimeUnixNano = 400UL,
+                                                TimeUnixNano = 900UL,
+                                                AsDouble = 43.0,
                                                 Attributes =
                                                 {
                                                     new KeyValue
@@ -346,6 +361,9 @@ public class OtelGrpcIngestionTests
         Assert.Equal("integration_metric", storedMetric.Name);
         Assert.Contains("scope.label:grpc", storedMetric.AttributeMap);
         Assert.Contains("service.name:metrics-service", storedMetric.AttributeMap);
+        // Start and end timestamps should mirror the earliest and latest data point samples.
+        Assert.Equal(500UL, storedMetric.StartTimestamp);
+        Assert.Equal(900UL, storedMetric.EndTimestamp);
     }
 
     private static async Task WaitForAsync(Func<Task<bool>> predicate, string failureMessage)
