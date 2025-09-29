@@ -29,22 +29,6 @@ message GetSearchDataResponse {
 
 }
 
-message GetUserSettingsRequest {
-
-}
-
-message GetUserSettingsResponse {
-  string Theme = 1;
-  TimestampType TimestampType=2;
-}
-
-enum TimestampType
-{
-  None = 0;
-  Absolute=1;
-  Relative=2;
-}
-
 message GetValuesForTagRequest {
   string TagName = 1;
 }
@@ -200,7 +184,6 @@ message GetMetricResponse {
 
 service DataService {
   rpc GetSearchData(GetSearchDataRequest) returns (GetSearchDataResponse) {}
-  rpc GetUserSettings(GetUserSettingsRequest) returns (GetUserSettingsResponse) {}
   rpc GetValuesForTag(GetValuesForTagRequest) returns (GetValuesForTagResponse) {}
   rpc SearchTraces(SearchTracesRequest) returns (SearchTracesResponse) {}
   
