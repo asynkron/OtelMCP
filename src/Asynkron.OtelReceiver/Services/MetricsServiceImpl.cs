@@ -76,10 +76,12 @@ public class MetricsServiceImpl : MetricsService.MetricsServiceBase
                     metrics.Add(me);
                 }
             }
-
-            foreach (var chunk in metrics.Chunk(2000))
-                await _repo.SaveMetrics(chunk);
         }
+
+        // Persist after the request has been fully materialised so previously-saved
+        // metrics are not re-processed when multiple ResourceMetrics payloads arrive.
+        foreach (var chunk in metrics.Chunk(2000))
+            await _repo.SaveMetrics(chunk);
         if (metrics.Count > 0)
         {
             _metrics.RecordMetricsReceived(metrics.Count);

@@ -348,6 +348,106 @@ public class OtelGrpcIngestionTests
         Assert.Contains("service.name:metrics-service", storedMetric.AttributeMap);
     }
 
+    [Fact]
+    public async Task ExportMetrics_WithMultipleResourcePayloads_PersistsSingleRowPerMetricName()
+    {
+        using var channel = _factory.CreateGrpcChannel();
+        var client = new MetricsService.MetricsServiceClient(channel);
+
+        const string metricName = "multi_resource_metric";
+
+        var request = new ExportMetricsServiceRequest
+        {
+            ResourceMetrics =
+            {
+                new ResourceMetrics
+                {
+                    Resource = new Resource
+                    {
+                        Attributes =
+                        {
+                            new KeyValue
+                            {
+                                Key = "service.name",
+                                Value = new AnyValue { StringValue = "metrics-service" }
+                            }
+                        }
+                    },
+                    ScopeMetrics =
+                    {
+                        new ScopeMetrics
+                        {
+                            Scope = new InstrumentationScope
+                            {
+                                Name = "integration-tests",
+                                Version = "1.0.0"
+                            },
+                            Metrics =
+                            {
+                                new Metric
+                                {
+                                    Name = metricName,
+                                    Description = "metric that should only persist once",
+                                    Unit = "1",
+                                    Gauge = new Gauge
+                                    {
+                                        DataPoints =
+                                        {
+                                            new NumberDataPoint
+                                            {
+                                                TimeUnixNano = 600,
+                                                AsDouble = 1.23
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                new ResourceMetrics
+                {
+                    Resource = new Resource
+                    {
+                        Attributes =
+                        {
+                            new KeyValue
+                            {
+                                Key = "service.name",
+                                Value = new AnyValue { StringValue = "metrics-service" }
+                            }
+                        }
+                    },
+                    ScopeMetrics =
+                    {
+                        // The bug repro: a subsequent ResourceMetrics without new metrics should not
+                        // cause previously buffered metrics to be written again.
+                        new ScopeMetrics
+                        {
+                            Scope = new InstrumentationScope
+                            {
+                                Name = "integration-tests",
+                                Version = "1.0.0"
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        await client.ExportAsync(request);
+
+        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(context =>
+                context.Metrics.AnyAsync(metric => metric.Name == metricName)),
+            "metric to be persisted once");
+
+        var storedMetrics = await _factory.ExecuteDbContextAsync(context =>
+            context.Metrics.Where(metric => metric.Name == metricName).ToListAsync());
+
+        var metricEntity = Assert.Single(storedMetrics);
+        Assert.Equal(metricName, metricEntity.Name);
+    }
+
     private static async Task WaitForAsync(Func<Task<bool>> predicate, string failureMessage)
     {
         var timeoutAt = DateTime.UtcNow + DefaultTimeout;
