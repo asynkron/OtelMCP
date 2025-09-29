@@ -318,7 +318,8 @@ public class ModelRepo(
                 continue;
             }
 
-            if (!TraceMatchesTagFilter(traceSpans, request.TagName, request.TagValue))
+            var (matchesFilter, attributeClause) = EvaluateTagFilter(traceSpans, request.TagName, request.TagValue);
+            if (!matchesFilter)
             {
                 continue;
             }
@@ -356,6 +357,30 @@ public class ModelRepo(
             {
                 Trace = overview
             };
+
+            if (attributeClause is not null)
+            {
+                traceResult.AttributeClauses.Add(attributeClause);
+            }
+
+            if (request.IncludeSpanProtos)
+            {
+                foreach (var span in traceSpans)
+                {
+                    // Persisted span blobs contain the original SpanWithService payload, so we
+                    // unpack it only when the caller explicitly requests the full span protos.
+                    if (span.Proto is not { Length: > 0 })
+                    {
+                        continue;
+                    }
+
+                    var spanWithService = SpanWithService.Parser.ParseFrom(span.Proto);
+                    if (spanWithService.Span is not null)
+                    {
+                        traceResult.Spans.Add(spanWithService.Span);
+                    }
+                }
+            }
 
             foreach (var log in traceLogs)
             {
@@ -591,31 +616,89 @@ public class ModelRepo(
         };
     }
 
-    private static bool TraceMatchesTagFilter(IEnumerable<SpanEntity> spans, string tagName, string tagValue)
+    private static (bool Matches, AttributeClauseMatch? Clause) EvaluateTagFilter(
+        IEnumerable<SpanEntity> spans,
+        string tagName,
+        string tagValue)
     {
         if (string.IsNullOrWhiteSpace(tagName))
         {
-            return true;
+            return (true, null);
         }
 
-        return spans.Any(span => SpanMatchesTag(span, tagName, tagValue));
+        var clause = new AttributeClauseMatch
+        {
+            Clause = string.IsNullOrWhiteSpace(tagValue)
+                ? $"tag:{tagName}"
+                : $"tag:{tagName}={tagValue}",
+            Satisfied = false
+        };
+
+        foreach (var span in spans)
+        {
+            foreach (var match in EnumerateAttributeMatches(span, tagName, tagValue))
+            {
+                clause.Matches.Add(match);
+            }
+        }
+
+        clause.Satisfied = clause.Matches.Count > 0;
+        return clause.Satisfied ? (true, clause) : (false, clause);
     }
 
-    private static bool SpanMatchesTag(SpanEntity span, string tagName, string tagValue)
+    private static IEnumerable<AttributeMatch> EnumerateAttributeMatches(
+        SpanEntity span,
+        string tagName,
+        string tagValue)
+    {
+        if (string.IsNullOrWhiteSpace(tagName)) yield break;
+
+        foreach (var (key, value) in EnumerateSpanAttributes(span))
+        {
+            if (!string.Equals(key, tagName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(tagValue) &&
+                !string.Equals(value, tagValue, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            yield return new AttributeMatch
+            {
+                SpanId = span.SpanId,
+                Key = key,
+                Value = value
+            };
+        }
+    }
+
+    private static IEnumerable<(string Key, string Value)> EnumerateSpanAttributes(SpanEntity span)
     {
         if (span.AttributeMap is not { Length: > 0 })
         {
-            return false;
+            yield break;
         }
 
-        if (!string.IsNullOrWhiteSpace(tagValue))
+        foreach (var attribute in span.AttributeMap)
         {
-            var target = $"{tagName}:{tagValue}";
-            return span.AttributeMap.Any(attribute => string.Equals(attribute, target, StringComparison.Ordinal));
-        }
+            if (string.IsNullOrEmpty(attribute))
+            {
+                continue;
+            }
 
-        var prefix = $"{tagName}:";
-        return span.AttributeMap.Any(attribute => attribute.StartsWith(prefix, StringComparison.Ordinal));
+            var separatorIndex = attribute.IndexOf(':');
+            if (separatorIndex <= 0 || separatorIndex >= attribute.Length - 1)
+            {
+                continue;
+            }
+
+            var key = attribute[..separatorIndex];
+            var value = attribute[(separatorIndex + 1)..];
+            yield return (key, value);
+        }
     }
 
     private static bool SpanHasError(SpanEntity span)
