@@ -11,14 +11,6 @@ message SpanWithService {
   string service_name = 2;
 }
 
-message CreateTraceSnapshotRequest {
-  string trace_id = 1;
-}
-
-message CreateTraceSnapshotResponse {
-  int32 snapshot_id = 1;
-}
-
 message GetSearchDataRequest {
 }
 
@@ -81,15 +73,6 @@ message LogCount {
 message SpanCount {
   string span_name = 1;
   int32 count = 2;
-}
-
-message CreateServiceMapSnapshotRequest {
-  uint64 start_time = 5;
-  uint64 end_time = 6;
-}
-
-message CreateServiceMapSnapshotResponse {
-  int32 snapshot_id = 1;
 }
 
 message GetServiceMapComponentsRequest {
@@ -186,11 +169,10 @@ service DataService {
   rpc GetSearchData(GetSearchDataRequest) returns (GetSearchDataResponse) {}
   rpc GetValuesForTag(GetValuesForTagRequest) returns (GetValuesForTagResponse) {}
   rpc SearchTraces(SearchTracesRequest) returns (SearchTracesResponse) {}
-  
-  rpc CreateTraceSnapshot(CreateTraceSnapshotRequest) returns (CreateTraceSnapshotResponse) {}
-  rpc CreateServiceMapSnapshot(CreateServiceMapSnapshotRequest) returns (CreateServiceMapSnapshotResponse) {}
+
   rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse) {}
-  
+  rpc GetServiceMapComponents(GetServiceMapComponentsRequest) returns (GetServiceMapComponentsResponse) {}
+
   rpc GetComponentMetadata(GetComponentMetadataRequest) returns (GetComponentMetadataResponse) {}
   rpc SetComponentMetadata(SetComponentMetadataRequest) returns (SetComponentMetadataResponse) {}
   rpc GetMetadataForComponent(GetMetadataForComponentRequest) returns (GetMetadataForComponentResponse) {}

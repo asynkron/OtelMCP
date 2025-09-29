@@ -11,7 +11,7 @@ Subsystems are organised into dedicated folders:
 
 - [`Data/context.md`](Data/context.md) – EF Core entities, repositories, and database-specific span bulk inserters.
 - [`Monitoring/context.md`](Monitoring/context.md) – instrumentation that tracks receiver throughput and exposes async snapshots.
-- [`Services/context.md`](Services/context.md) – gRPC service implementations for OTLP traces/logs/metrics and custom metrics streaming.
+- [`Services/context.md`](Services/context.md) – gRPC service implementations for OTLP traces/logs/metrics, TraceLens data queries, custom metrics streaming, and the streaming HTTP MCP bridge.
 - [`TraceLens/context.md`](TraceLens/context.md) – TraceLens domain logic, extractors, and helper utilities used to interpret telemetry payloads.
 - [`Migrations/context.md`](Migrations/context.md) – EF Core migration history describing the storage schema.
 - [`opentelemetry/context.md`](opentelemetry/context.md) – vendored OpenTelemetry proto files consumed for code generation.

@@ -197,6 +197,293 @@ public class ModelRepo(
         return string.Join(", ", attributes.Select(kvp => $"{kvp.Key}:{kvp.Value}"));
     }
 
+    public async Task<GetSearchDataResponse> GetSearchData(GetSearchDataRequest request)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync();
+
+        var serviceNames = await context.Spans
+            .Select(span => span.ServiceName)
+            .Distinct()
+            .OrderBy(name => name)
+            .ToListAsync();
+
+        var spanNames = await context.SpanNames
+            .Select(span => span.Name)
+            .Distinct()
+            .OrderBy(name => name)
+            .ToListAsync();
+
+        var tagNames = await context.SpanAttributes
+            .Select(attribute => attribute.Key)
+            .Distinct()
+            .OrderBy(name => name)
+            .ToListAsync();
+
+        var response = new GetSearchDataResponse();
+        response.ServiceNames.AddRange(serviceNames);
+        response.SpanNames.AddRange(spanNames);
+        response.TagNames.AddRange(tagNames);
+
+        return response;
+    }
+
+    public async Task<GetValuesForTagResponse> GetValuesForTag(GetValuesForTagRequest request)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync();
+
+        var values = await context.SpanAttributes
+            .Where(attribute => attribute.Key == request.TagName)
+            .Select(attribute => attribute.Value)
+            .Distinct()
+            .OrderBy(value => value)
+            .ToListAsync();
+
+        var response = new GetValuesForTagResponse();
+        response.TagValues.AddRange(values);
+
+        return response;
+    }
+
+    public async Task<SearchTracesResponse> SearchTraces(SearchTracesRequest request)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync();
+
+        var limit = request.Limit > 0 ? request.Limit : 10;
+
+        var spansQuery = context.Spans.AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(request.ServiceName))
+        {
+            spansQuery = spansQuery.Where(span => span.ServiceName == request.ServiceName);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.SpanName))
+        {
+            spansQuery = spansQuery.Where(span => span.OperationName == request.SpanName);
+        }
+
+        if (request.StartTime != 0)
+        {
+            spansQuery = spansQuery.Where(span => span.StartTimestamp >= (long)request.StartTime);
+        }
+
+        if (request.EndTime != 0)
+        {
+            spansQuery = spansQuery.Where(span => span.EndTimestamp <= (long)request.EndTime);
+        }
+
+        var candidates = await spansQuery
+            .GroupBy(span => span.TraceId)
+            .Select(group => new
+            {
+                TraceId = group.Key,
+                Start = group.Min(span => span.StartTimestamp)
+            })
+            .OrderByDescending(group => group.Start)
+            .Take(limit * 3)
+            .ToListAsync();
+
+        if (candidates.Count == 0)
+        {
+            return new SearchTracesResponse();
+        }
+
+        var candidateIds = candidates.Select(group => group.TraceId).ToList();
+
+        var spans = await context.Spans
+            .Where(span => candidateIds.Contains(span.TraceId))
+            .ToListAsync();
+
+        var logs = await context.Logs
+            .Where(log => candidateIds.Contains(log.TraceId))
+            .ToListAsync();
+
+        var traceOrder = candidates
+            .OrderByDescending(group => group.Start)
+            .Select(group => group.TraceId)
+            .ToList();
+
+        var response = new SearchTracesResponse();
+        var selectedTraceIds = new List<string>();
+
+        foreach (var traceId in traceOrder)
+        {
+            var traceSpans = spans
+                .Where(span => span.TraceId == traceId)
+                .OrderBy(span => span.StartTimestamp)
+                .ToList();
+
+            if (traceSpans.Count == 0)
+            {
+                continue;
+            }
+
+            if (!TraceMatchesTagFilter(traceSpans, request.TagName, request.TagValue))
+            {
+                continue;
+            }
+
+            selectedTraceIds.Add(traceId);
+
+            var traceLogs = logs
+                .Where(log => log.TraceId == traceId)
+                .ToList();
+
+            if (!string.IsNullOrWhiteSpace(request.LogSearch))
+            {
+                traceLogs = traceLogs
+                    .Where(log => log.RawBody?.Contains(request.LogSearch, StringComparison.OrdinalIgnoreCase) ?? false)
+                    .ToList();
+            }
+
+            var overview = new TraceOverview
+            {
+                TraceId = traceId,
+                Name = traceSpans.First().OperationName,
+                StartTimeUnixNano = (ulong)traceSpans.Min(span => span.StartTimestamp),
+                EndTimeUnixNano = (ulong)traceSpans.Max(span => span.EndTimestamp),
+                HasError = traceSpans.Any(SpanHasError)
+            };
+
+            overview.Spans.AddRange(traceSpans.Select(span => new SpanOverview
+            {
+                TraceId = span.TraceId,
+                OperationName = span.OperationName,
+                ServiceName = span.ServiceName
+            }));
+
+            var traceResult = new SearchTraceResult
+            {
+                Trace = overview
+            };
+
+            foreach (var log in traceLogs)
+            {
+                traceResult.Logs.Add(LogRecord.Parser.ParseFrom(log.Proto));
+            }
+
+            response.Results.Add(traceResult);
+
+            if (response.Results.Count == limit)
+            {
+                break;
+            }
+        }
+
+        var logCounts = logs
+            .Where(log => selectedTraceIds.Contains(log.TraceId))
+            .Where(log => string.IsNullOrWhiteSpace(request.LogSearch) ||
+                          (log.RawBody?.Contains(request.LogSearch, StringComparison.OrdinalIgnoreCase) ?? false))
+            .GroupBy(log => log.RawBody ?? string.Empty)
+            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
+
+        var spanCounts = spans
+            .Where(span => selectedTraceIds.Contains(span.TraceId))
+            .GroupBy(span => span.OperationName ?? string.Empty)
+            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
+
+        response.LogCounts.AddRange(logCounts.Select(kvp => new LogCount
+        {
+            RawBody = kvp.Key,
+            Count = kvp.Value
+        }));
+
+        response.SpanCounts.AddRange(spanCounts.Select(kvp => new SpanCount
+        {
+            SpanName = kvp.Key,
+            Count = kvp.Value
+        }));
+
+        return response;
+    }
+
+    public async Task<GetServiceMapComponentsResponse> GetServiceMapComponents(GetServiceMapComponentsRequest request)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync();
+
+        var spansQuery = context.Spans.AsQueryable();
+
+        if (request.StartTime != 0)
+        {
+            spansQuery = spansQuery.Where(span => span.StartTimestamp >= (long)request.StartTime);
+        }
+
+        if (request.EndTime != 0)
+        {
+            spansQuery = spansQuery.Where(span => span.EndTimestamp <= (long)request.EndTime);
+        }
+
+        var services = await spansQuery
+            .Select(span => span.ServiceName)
+            .Distinct()
+            .OrderBy(name => name)
+            .ToListAsync();
+
+        var response = new GetServiceMapComponentsResponse();
+        foreach (var service in services)
+        {
+            if (string.IsNullOrWhiteSpace(service))
+            {
+                continue;
+            }
+
+            response.Components.Add(new GetServiceMapComponentsResponse.Types.Component
+            {
+                Id = $"{service}:{service}",
+                GroupName = service,
+                ComponentName = service,
+                ComponentKind = "Service"
+            });
+        }
+
+        return response;
+    }
+
+    public async Task<GetComponentMetadataResponse> GetComponentMetadata(GetComponentMetadataRequest request)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync();
+
+        var metadata = await context.ComponentMetaData
+            .OrderBy(component => component.NamePath)
+            .ToListAsync();
+
+        var response = new GetComponentMetadataResponse();
+        response.ComponentMetadata.AddRange(metadata.Select(component => new GetComponentMetadataResponse.Types.ComponentMetadata
+        {
+            NamePath = component.NamePath,
+            Annotations = component.Annotation
+        }));
+
+        return response;
+    }
+
+    public async Task<GetMetadataForComponentResponse> GetMetadataForComponent(GetMetadataForComponentRequest request)
+    {
+        var (groupName, componentName) = ParseComponentId(request.ComponentId);
+
+        await using var context = await contextFactory.CreateDbContextAsync();
+
+        var key = string.IsNullOrWhiteSpace(groupName) && string.IsNullOrWhiteSpace(componentName)
+            ? string.Empty
+            : $"{groupName}:{componentName}";
+
+        var annotation = key == string.Empty
+            ? string.Empty
+            : await context.ComponentMetaData
+                .Where(component => component.NamePath == key)
+                .Select(component => component.Annotation)
+                .FirstOrDefaultAsync();
+
+        return new GetMetadataForComponentResponse
+        {
+            GroupName = groupName,
+            ComponentName = componentName,
+            ComponentKind = string.IsNullOrWhiteSpace(groupName) ? string.Empty : "Service",
+            Annotation = annotation ?? string.Empty
+        };
+    }
+
+
     public async Task SaveSnapshot(SaveSnapshotRequest request)
     {
         await using var context = await contextFactory.CreateDbContextAsync();
@@ -302,5 +589,58 @@ public class ModelRepo(
         {
             Metrics = { protos }
         };
+    }
+
+    private static bool TraceMatchesTagFilter(IEnumerable<SpanEntity> spans, string tagName, string tagValue)
+    {
+        if (string.IsNullOrWhiteSpace(tagName))
+        {
+            return true;
+        }
+
+        return spans.Any(span => SpanMatchesTag(span, tagName, tagValue));
+    }
+
+    private static bool SpanMatchesTag(SpanEntity span, string tagName, string tagValue)
+    {
+        if (span.AttributeMap is not { Length: > 0 })
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(tagValue))
+        {
+            var target = $"{tagName}:{tagValue}";
+            return span.AttributeMap.Any(attribute => string.Equals(attribute, target, StringComparison.Ordinal));
+        }
+
+        var prefix = $"{tagName}:";
+        return span.AttributeMap.Any(attribute => attribute.StartsWith(prefix, StringComparison.Ordinal));
+    }
+
+    private static bool SpanHasError(SpanEntity span)
+    {
+        if (span.AttributeMap is not { Length: > 0 })
+        {
+            return false;
+        }
+
+        return span.AttributeMap.Any(attribute =>
+            string.Equals(attribute, "status.code:STATUS_CODE_ERROR", StringComparison.Ordinal) ||
+            attribute.Contains("error", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static (string GroupName, string ComponentName) ParseComponentId(string componentId)
+    {
+        if (string.IsNullOrWhiteSpace(componentId))
+        {
+            return (string.Empty, string.Empty);
+        }
+
+        var parts = componentId.Split(':', 2, StringSplitOptions.TrimEntries);
+
+        return parts.Length == 2
+            ? (parts[0], parts[1])
+            : (componentId, componentId);
     }
 }
