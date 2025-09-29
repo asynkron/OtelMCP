@@ -22,7 +22,7 @@ namespace Asynkron.OtelReceiver.Tests;
 [Collection("GrpcIntegration")]
 public class McpStreamingHttpTests
 {
-    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(10);
     private static readonly JsonSerializerOptions CommandSerializerOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,

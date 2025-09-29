@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using Microsoft.EntityFrameworkCore;
@@ -9,6 +10,7 @@ namespace Asynkron.OtelReceiver.Data;
 public class OtelReceiverContext(DbContextOptions<OtelReceiverContext> options) : DbContext(options)
 {
     public DbSet<LogEntity> Logs { get; set; }
+    public DbSet<LogAttributeEntity> LogAttributes { get; set; }
     public DbSet<SpanEntity> Spans { get; set; }
 
     public DbSet<UserSettingsEntity> UserSettings { get; set; }
@@ -43,11 +45,31 @@ public class LogEntity
 
     public byte[] Proto { get; set; }
 
-    //Key + ":" + Value... query checks for existence of entire string
-    public string[] ResourceMap { get; set; }
+    public ICollection<LogAttributeEntity> Attributes { get; set; } = new List<LogAttributeEntity>();
+}
 
-    //Key + ":" + Value... query checks for existence of entire string
-    public string[] AttributeMap { get; set; }
+[Index(nameof(LogId))]
+[Index(nameof(Key))]
+[Index(nameof(Value))]
+[Index(nameof(Key), nameof(Value))]
+public class LogAttributeEntity
+{
+    [Key]
+    [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
+    public int Id { get; set; }
+
+    public int LogId { get; set; }
+    public string Key { get; set; }
+    public string Value { get; set; }
+    public LogAttributeSource Source { get; set; }
+
+    public LogEntity Log { get; set; }
+}
+
+public enum LogAttributeSource : byte
+{
+    Record = 0,
+    Resource = 1
 }
 
 [Index(nameof(SpanId))]

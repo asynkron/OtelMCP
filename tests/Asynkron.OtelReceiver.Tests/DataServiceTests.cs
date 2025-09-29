@@ -424,6 +424,245 @@ public class DataServiceTests
         Assert.Equal(traceIds[0], singleTrace.Trace.TraceId);
     }
 
+    [Fact]
+    public async Task SearchTraces_FiltersLogsByLogAttributes()
+    {
+        using var channel = _factory.CreateGrpcChannel();
+        var traceClient = new TraceService.TraceServiceClient(channel);
+        var logsClient = new LogsService.LogsServiceClient(channel);
+        var dataClient = new DataService.DataServiceClient(channel);
+
+        var traceIdBytes = Enumerable.Range(200, 16).Select(i => (byte)i).ToArray();
+        var spanIdBytes = Enumerable.Range(200, 8).Select(i => (byte)i).ToArray();
+        var traceIdHex = Convert.ToHexString(traceIdBytes);
+        var spanIdHex = Convert.ToHexString(spanIdBytes);
+
+        // Seed a trace so search responses have span context to hydrate.
+        var traceRequest = new ExportTraceServiceRequest
+        {
+            ResourceSpans =
+            {
+                new ResourceSpans
+                {
+                    Resource = new Resource
+                    {
+                        Attributes =
+                        {
+                            new KeyValue
+                            {
+                                Key = "service.name",
+                                Value = new AnyValue { StringValue = "log-service" }
+                            }
+                        }
+                    },
+                    ScopeSpans =
+                    {
+                        new ScopeSpans
+                        {
+                            Spans =
+                            {
+                                new Span
+                                {
+                                    TraceId = ByteString.CopyFrom(traceIdBytes),
+                                    SpanId = ByteString.CopyFrom(spanIdBytes),
+                                    Name = "log-operation",
+                                    StartTimeUnixNano = 5_000,
+                                    EndTimeUnixNano = 6_000
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        await traceClient.ExportAsync(traceRequest);
+
+        var logsRequest = new ExportLogsServiceRequest
+        {
+            ResourceLogs =
+            {
+                new ResourceLogs
+                {
+                    Resource = new Resource
+                    {
+                        Attributes =
+                        {
+                            new KeyValue
+                            {
+                                Key = "service.name",
+                                Value = new AnyValue { StringValue = "log-service" }
+                            },
+                            new KeyValue
+                            {
+                                Key = "deployment.environment",
+                                Value = new AnyValue { StringValue = "prod" }
+                            }
+                        }
+                    },
+                    ScopeLogs =
+                    {
+                        new ScopeLogs
+                        {
+                            LogRecords =
+                            {
+                                new LogRecord
+                                {
+                                    TimeUnixNano = 5_500,
+                                    TraceId = ByteString.CopyFrom(traceIdBytes),
+                                    SpanId = ByteString.CopyFrom(spanIdBytes),
+                                    Body = new AnyValue { StringValue = "cart log" },
+                                    Attributes =
+                                    {
+                                        new KeyValue
+                                        {
+                                            Key = "http.route",
+                                            Value = new AnyValue { StringValue = "/cart" }
+                                        },
+                                        new KeyValue
+                                        {
+                                            Key = "log.kind",
+                                            Value = new AnyValue { StringValue = "record" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                new ResourceLogs
+                {
+                    Resource = new Resource
+                    {
+                        Attributes =
+                        {
+                            new KeyValue
+                            {
+                                Key = "service.name",
+                                Value = new AnyValue { StringValue = "log-service" }
+                            },
+                            new KeyValue
+                            {
+                                Key = "deployment.environment",
+                                Value = new AnyValue { StringValue = "qa" }
+                            }
+                        }
+                    },
+                    ScopeLogs =
+                    {
+                        new ScopeLogs
+                        {
+                            LogRecords =
+                            {
+                                new LogRecord
+                                {
+                                    TimeUnixNano = 5_600,
+                                    TraceId = ByteString.CopyFrom(traceIdBytes),
+                                    SpanId = ByteString.CopyFrom(spanIdBytes),
+                                    Body = new AnyValue { StringValue = "checkout log" },
+                                    Attributes =
+                                    {
+                                        new KeyValue
+                                        {
+                                            Key = "http.route",
+                                            Value = new AnyValue { StringValue = "/checkout" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        await logsClient.ExportAsync(logsRequest);
+
+        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(async context =>
+                (await context.Spans.CountAsync(span => span.TraceId == traceIdHex)) > 0),
+            "trace to be queryable for log filtering");
+
+        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(async context =>
+                (await context.Logs.CountAsync(log => log.TraceId == traceIdHex)) == 2),
+            "logs to be queryable for attribute filtering");
+
+        var routeFilterResponse = await dataClient.SearchTracesAsync(new SearchTracesRequest
+        {
+            Limit = 5,
+            Filter = new TraceFilterExpression
+            {
+                Composite = new TraceFilterComposite
+                {
+                    Operator = TraceFilterComposite.Types.Operator.And,
+                    Expressions =
+                    {
+                        new TraceFilterExpression
+                        {
+                            Service = new ServiceFilter { Name = "log-service" }
+                        },
+                        new TraceFilterExpression
+                        {
+                            Attribute = new AttributeFilter
+                            {
+                                Key = "http.route",
+                                Value = "/cart",
+                                Operator = AttributeFilterOperator.Equals,
+                                Target = AttributeFilterTarget.Log
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        var routeResult = Assert.Single(routeFilterResponse.Results);
+        var routeLog = Assert.Single(routeResult.Logs);
+        Assert.Equal("cart log", routeLog.Body.StringValue);
+        var routeClause = Assert.Single(routeResult.AttributeClauses);
+        Assert.True(routeClause.Satisfied);
+        Assert.Equal("log:http.route=/cart", routeClause.Clause);
+        var routeMatch = Assert.Single(routeClause.Matches);
+        Assert.Equal(spanIdHex, routeMatch.SpanId);
+
+        var resourceFilterResponse = await dataClient.SearchTracesAsync(new SearchTracesRequest
+        {
+            Limit = 5,
+            Filter = new TraceFilterExpression
+            {
+                Composite = new TraceFilterComposite
+                {
+                    Operator = TraceFilterComposite.Types.Operator.And,
+                    Expressions =
+                    {
+                        new TraceFilterExpression
+                        {
+                            Service = new ServiceFilter { Name = "log-service" }
+                        },
+                        new TraceFilterExpression
+                        {
+                            Attribute = new AttributeFilter
+                            {
+                                Key = "deployment.environment",
+                                Value = "prod",
+                                Operator = AttributeFilterOperator.Equals,
+                                Target = AttributeFilterTarget.Log
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        var resourceResult = Assert.Single(resourceFilterResponse.Results);
+        var resourceLog = Assert.Single(resourceResult.Logs);
+        Assert.Equal("cart log", resourceLog.Body.StringValue);
+        var resourceClause = Assert.Single(resourceResult.AttributeClauses);
+        Assert.True(resourceClause.Satisfied);
+        Assert.Equal("log:deployment.environment=prod", resourceClause.Clause);
+        var resourceMatch = Assert.Single(resourceClause.Matches);
+        Assert.Equal(spanIdHex, resourceMatch.SpanId);
+    }
+
     private static async Task WaitForAsync(Func<Task<bool>> predicate, string failureMessage)
     {
         var timeoutAt = DateTime.UtcNow + DefaultTimeout;
