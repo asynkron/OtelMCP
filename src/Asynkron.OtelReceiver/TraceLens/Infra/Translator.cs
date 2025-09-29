@@ -5,6 +5,7 @@ using OpenTelemetry.Proto.Common.V1;
 using OpenTelemetry.Proto.Logs.V1;
 using TraceLens.Model;
 using Tracelens.Proto.V1;
+using TraceLensModelDomain = TraceLens.Model.TraceLensModel;
 using Span = OpenTelemetry.Proto.Trace.V1.Span;
 
 namespace TraceLens.Infra;
@@ -17,7 +18,7 @@ public static class OtelTranslator
         return logs;
     }
 
-    public static TraceLensModel GetModel(IReadOnlyCollection<SpanWithService> traces,
+    public static TraceLensModelDomain GetModel(IReadOnlyCollection<SpanWithService> traces,
         IReadOnlyCollection<LogRecord> logRecords, bool flatten, bool diagnostics=true, bool multiRoot=false)
     {
         var sw = Stopwatch.StartNew();
@@ -46,7 +47,7 @@ public static class OtelTranslator
             .ToList();
         Console.WriteLine("end translation");
 
-        var model = TraceLensModel.Create(entries, flatten, diagnostics, multiRoot);
+        var model = TraceLensModelDomain.Create(entries, flatten, diagnostics, multiRoot);
 
         Console.WriteLine("Model translation {0}",sw.Elapsed);
         return model;

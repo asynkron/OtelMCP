@@ -188,10 +188,13 @@ public class ModelRepo(
         if (!string.IsNullOrEmpty(str))
             return str;
 
-        return l.Attributes.ToDictionary(
-                x => x.Key,
-                x => x.Value.ToStringValue())
-            .ToKvpString();
+        var attributes = l.Attributes.ToDictionary(
+            x => x.Key,
+            x => x.Value.ToStringValue());
+
+        // Joining attributes makes it easier to inspect ad-hoc log payloads when
+        // the body field is empty. This keeps the previous "key:value" format.
+        return string.Join(", ", attributes.Select(kvp => $"{kvp.Key}:{kvp.Value}"));
     }
 
     public async Task SaveSnapshot(SaveSnapshotRequest request)
@@ -244,14 +247,14 @@ public class ModelRepo(
             var entity = new ComponentMetadataEntity
             {
                 NamePath = request.NamePath,
-                Annotation = request.Annotation
+                Annotation = request.Annotations
             };
 
             await context.ComponentMetaData.AddAsync(entity);
         }
         else
         {
-            existing.Annotation = request.Annotation;
+            existing.Annotation = request.Annotations;
             context.ComponentMetaData.Update(existing);
         }
 

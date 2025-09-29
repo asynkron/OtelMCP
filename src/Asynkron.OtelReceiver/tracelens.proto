@@ -154,18 +154,31 @@ message GetMetadataForComponentResponse {
   string annotation = 4;
 }
 
-message Snapshot {
+message TraceLensModel {
   repeated SpanWithService spans = 1;
   repeated opentelemetry.proto.logs.v1.LogRecord logs = 2;
+}
+
+message SaveSnapshotRequest {
+  TraceLensModel model = 1;
+}
+
+message Snapshot {
+  int32 id = 1;
+  int64 timestamp = 2;
+  TraceLensModel traces = 3;
+}
+
+message ListSnapshotsResponse {
+  repeated Snapshot snapshots = 1;
 }
 
 message GetSnapshotRequest {
-  int32 snapshot_id = 1;
+  int32 id = 1;
 }
 
 message GetSnapshotResponse {
-  repeated SpanWithService spans = 1;
-  repeated opentelemetry.proto.logs.v1.LogRecord logs = 2;
+  TraceLensModel model = 1;
 }
 
 message GetMetricNamesRequest {

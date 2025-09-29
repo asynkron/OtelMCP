@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -67,7 +68,6 @@ public class PostgresSpanBulkInserter(ILogger<PostgresSpanBulkInserter> logger) 
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to bulk insert spans using PostgreSQL COPY");
-            await writer.CancelAsync(cancellationToken);
             throw;
         }
 
