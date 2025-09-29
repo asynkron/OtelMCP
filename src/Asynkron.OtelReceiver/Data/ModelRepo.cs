@@ -221,18 +221,21 @@ public class ModelRepo(
         await using var context = await contextFactory.CreateDbContextAsync();
 
         var serviceNames = await context.Spans
+            .AsNoTracking()
             .Select(span => span.ServiceName)
             .Distinct()
             .OrderBy(name => name)
             .ToListAsync();
 
         var spanNames = await context.SpanNames
+            .AsNoTracking()
             .Select(span => span.Name)
             .Distinct()
             .OrderBy(name => name)
             .ToListAsync();
 
         var tagNames = await context.SpanAttributes
+            .AsNoTracking()
             .Select(attribute => attribute.Key)
             .Distinct()
             .OrderBy(name => name)
@@ -251,6 +254,7 @@ public class ModelRepo(
         await using var context = await contextFactory.CreateDbContextAsync();
 
         var values = await context.SpanAttributes
+            .AsNoTracking()
             .Where(attribute => attribute.Key == request.TagName)
             .Select(attribute => attribute.Value)
             .Distinct()
@@ -269,7 +273,9 @@ public class ModelRepo(
 
         var limit = request.Limit > 0 ? request.Limit : 10;
 
-        var spansQuery = context.Spans.AsQueryable();
+        var spansQuery = context.Spans
+            .AsNoTracking()
+            .AsQueryable();
 
         var serviceNames = new HashSet<string>(StringComparer.Ordinal);
         var spanNames = new HashSet<string>(StringComparer.Ordinal);
@@ -319,6 +325,7 @@ public class ModelRepo(
         var candidateIds = candidates.Select(group => group.TraceId).ToList();
 
         var spans = await context.Spans
+            .AsNoTracking()
             .Where(span => candidateIds.Contains(span.TraceId))
             .ToListAsync();
 
@@ -331,6 +338,7 @@ public class ModelRepo(
         CollectRequiredLogAttributeFilters(request.Filter, requiredLogFilters, true);
 
         IQueryable<LogEntity> logsQuery = context.Logs
+            .AsNoTracking()
             .Where(log => candidateIds.Contains(log.TraceId));
 
         if (normalizedLogSearch is not null)
@@ -477,7 +485,9 @@ public class ModelRepo(
     {
         await using var context = await contextFactory.CreateDbContextAsync();
 
-        var spansQuery = context.Spans.AsQueryable();
+        var spansQuery = context.Spans
+            .AsNoTracking()
+            .AsQueryable();
 
         if (request.StartTime != 0)
         {
@@ -520,6 +530,7 @@ public class ModelRepo(
         await using var context = await contextFactory.CreateDbContextAsync();
 
         var metadata = await context.ComponentMetaData
+            .AsNoTracking()
             .OrderBy(component => component.NamePath)
             .ToListAsync();
 
@@ -546,6 +557,7 @@ public class ModelRepo(
         var annotation = key == string.Empty
             ? string.Empty
             : await context.ComponentMetaData
+                .AsNoTracking()
                 .Where(component => component.NamePath == key)
                 .Select(component => component.Annotation)
                 .FirstOrDefaultAsync();
@@ -575,7 +587,9 @@ public class ModelRepo(
     public async Task<GetSnapshotResponse> GetSnapshot(GetSnapshotRequest request)
     {
         await using var context = await contextFactory.CreateDbContextAsync();
-        var snapshot = await context.Snapshots.FindAsync(request.Id);
+        var snapshot = await context.Snapshots
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == request.Id);
         return new GetSnapshotResponse
         {
             Model = snapshot is null ? null : TraceLensModel.Parser.ParseFrom(snapshot.Proto)
@@ -585,7 +599,9 @@ public class ModelRepo(
     public async Task<ListSnapshotsResponse> ListSnapshots()
     {
         await using var context = await contextFactory.CreateDbContextAsync();
-        var snapshots = await context.Snapshots.ToListAsync();
+        var snapshots = await context.Snapshots
+            .AsNoTracking()
+            .ToListAsync();
 
         var response = new ListSnapshotsResponse();
         response.Snapshots.AddRange(snapshots.Select(s => new Snapshot
@@ -645,7 +661,11 @@ public class ModelRepo(
     public async Task<GetMetricNamesResponse> GetMetricNames(GetMetricNamesRequest request)
     {
         await using var context = await contextFactory.CreateDbContextAsync();
-        var names = await context.Metrics.Select(m => m.Name).Distinct().ToListAsync();
+        var names = await context.Metrics
+            .AsNoTracking()
+            .Select(m => m.Name)
+            .Distinct()
+            .ToListAsync();
 
         return new GetMetricNamesResponse()
         {
@@ -657,7 +677,9 @@ public class ModelRepo(
     {
         await using var context = await contextFactory.CreateDbContextAsync();
         var data = await context.Metrics
-            .Where(m => m.Name == request.Name).ToListAsync();
+            .AsNoTracking()
+            .Where(m => m.Name == request.Name)
+            .ToListAsync();
 
         var protos = data.Select(m => Metric.Parser.ParseFrom(m.Proto)).ToList();
 
