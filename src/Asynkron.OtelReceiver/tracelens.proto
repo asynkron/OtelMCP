@@ -50,6 +50,8 @@ message TraceFilterExpression {
     AttributeFilter attribute = 2;
     ServiceFilter service = 3;
     SpanNameFilter span_name = 4;
+    ErrorFilter error = 5;
+    DurationFilter duration = 6;
   }
 }
 
@@ -91,6 +93,23 @@ message SpanNameFilter {
   string name = 1;
   string log_search = 8;
   bool include_span_protos = 9;
+}
+
+// Narrows search results to traces that match error semantics (e.g., any span with status=ERROR).
+message ErrorFilter {
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    MODE_ONLY_ERRORS = 1;
+    MODE_ONLY_NON_ERRORS = 2;
+  }
+
+  Mode mode = 1;
+}
+
+// Constrains trace search by span duration (nanos). Zero values indicate "no bound".
+message DurationFilter {
+  uint64 min_nanos = 1;
+  uint64 max_nanos = 2;
 }
 
 message SpanOverview {

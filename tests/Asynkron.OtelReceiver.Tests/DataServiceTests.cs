@@ -425,6 +425,270 @@ public class DataServiceTests
     }
 
     [Fact]
+    public async Task SearchTraces_CanFilterByErrorMode()
+    {
+        using var channel = _factory.CreateGrpcChannel();
+        var traceClient = new TraceService.TraceServiceClient(channel);
+        var dataClient = new DataService.DataServiceClient(channel);
+
+        var traces = new[]
+        {
+            new
+            {
+                TraceIdBytes = Enumerable.Range(30, 16).Select(i => (byte)i).ToArray(),
+                SpanIdBytes = Enumerable.Range(70, 8).Select(i => (byte)i).ToArray(),
+                Status = "STATUS_CODE_ERROR"
+            },
+            new
+            {
+                TraceIdBytes = Enumerable.Range(40, 16).Select(i => (byte)i).ToArray(),
+                SpanIdBytes = Enumerable.Range(90, 8).Select(i => (byte)i).ToArray(),
+                Status = "STATUS_CODE_OK"
+            }
+        };
+
+        var exportRequest = new ExportTraceServiceRequest();
+        foreach (var trace in traces)
+        {
+            exportRequest.ResourceSpans.Add(new ResourceSpans
+            {
+                Resource = new Resource
+                {
+                    Attributes =
+                    {
+                        new KeyValue
+                        {
+                            Key = "service.name",
+                            Value = new AnyValue { StringValue = "error-service" }
+                        }
+                    }
+                },
+                ScopeSpans =
+                {
+                    new ScopeSpans
+                    {
+                        Spans =
+                        {
+                            new Span
+                            {
+                                TraceId = ByteString.CopyFrom(trace.TraceIdBytes),
+                                SpanId = ByteString.CopyFrom(trace.SpanIdBytes),
+                                Name = $"error-{trace.Status.ToLowerInvariant()}",
+                                StartTimeUnixNano = 50_000,
+                                EndTimeUnixNano = 150_000,
+                                Attributes =
+                                {
+                                    new KeyValue
+                                    {
+                                        Key = "status.code",
+                                        Value = new AnyValue { StringValue = trace.Status }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        await traceClient.ExportAsync(exportRequest);
+
+        var traceIds = traces
+            .Select(trace => Convert.ToHexString(trace.TraceIdBytes))
+            .ToArray();
+
+        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(async context =>
+                (await context.Spans.CountAsync(span => traceIds.Contains(span.TraceId))) == traceIds.Length),
+            "error filter traces to be queryable");
+
+        // Require traces with at least one error span.
+        var errorOnlyResponse = await dataClient.SearchTracesAsync(new SearchTracesRequest
+        {
+            Limit = 5,
+            Filter = new TraceFilterExpression
+            {
+                Composite = new TraceFilterComposite
+                {
+                    Operator = TraceFilterComposite.Types.Operator.And,
+                    Expressions =
+                    {
+                        new TraceFilterExpression
+                        {
+                            Service = new ServiceFilter { Name = "error-service" }
+                        },
+                        new TraceFilterExpression
+                        {
+                            Error = new ErrorFilter
+                            {
+                                Mode = ErrorFilter.Types.Mode.OnlyErrors
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        var errorTrace = Assert.Single(errorOnlyResponse.Results);
+        Assert.Equal(traceIds[0], errorTrace.Trace.TraceId);
+        Assert.True(errorTrace.Trace.HasError);
+
+        // Request the inverse to ensure non-error traces still surface.
+        var okOnlyResponse = await dataClient.SearchTracesAsync(new SearchTracesRequest
+        {
+            Limit = 5,
+            Filter = new TraceFilterExpression
+            {
+                Composite = new TraceFilterComposite
+                {
+                    Operator = TraceFilterComposite.Types.Operator.And,
+                    Expressions =
+                    {
+                        new TraceFilterExpression
+                        {
+                            Service = new ServiceFilter { Name = "error-service" }
+                        },
+                        new TraceFilterExpression
+                        {
+                            Error = new ErrorFilter
+                            {
+                                Mode = ErrorFilter.Types.Mode.OnlyNonErrors
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        var okTrace = Assert.Single(okOnlyResponse.Results);
+        Assert.Equal(traceIds[1], okTrace.Trace.TraceId);
+        Assert.False(okTrace.Trace.HasError);
+    }
+
+    [Fact]
+    public async Task SearchTraces_CanFilterByDurationBounds()
+    {
+        using var channel = _factory.CreateGrpcChannel();
+        var traceClient = new TraceService.TraceServiceClient(channel);
+        var dataClient = new DataService.DataServiceClient(channel);
+
+        var traces = new[]
+        {
+            new
+            {
+                TraceIdBytes = Enumerable.Range(210, 16).Select(i => (byte)i).ToArray(),
+                SpanIdBytes = Enumerable.Range(210, 8).Select(i => (byte)i).ToArray(),
+                Duration = 2_000_000UL
+            },
+            new
+            {
+                TraceIdBytes = Enumerable.Range(230, 16).Select(i => (byte)i).ToArray(),
+                SpanIdBytes = Enumerable.Range(230, 8).Select(i => (byte)i).ToArray(),
+                Duration = 9_000_000UL
+            }
+        };
+
+        var exportRequest = new ExportTraceServiceRequest();
+        foreach (var trace in traces)
+        {
+            exportRequest.ResourceSpans.Add(new ResourceSpans
+            {
+                Resource = new Resource
+                {
+                    Attributes =
+                    {
+                        new KeyValue
+                        {
+                            Key = "service.name",
+                            Value = new AnyValue { StringValue = "duration-service" }
+                        }
+                    }
+                },
+                ScopeSpans =
+                {
+                    new ScopeSpans
+                    {
+                        Spans =
+                        {
+                            new Span
+                            {
+                                TraceId = ByteString.CopyFrom(trace.TraceIdBytes),
+                                SpanId = ByteString.CopyFrom(trace.SpanIdBytes),
+                                Name = $"duration-{trace.Duration}",
+                                StartTimeUnixNano = 1_000_000,
+                                EndTimeUnixNano = 1_000_000 + trace.Duration
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        await traceClient.ExportAsync(exportRequest);
+
+        var traceIds = traces
+            .Select(trace => Convert.ToHexString(trace.TraceIdBytes))
+            .ToArray();
+
+        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(async context =>
+                (await context.Spans.CountAsync(span => traceIds.Contains(span.TraceId))) == traceIds.Length),
+            "duration filter traces to be queryable");
+
+        // Minimum duration guard should favour the longest span in the trace set.
+        var minDurationResponse = await dataClient.SearchTracesAsync(new SearchTracesRequest
+        {
+            Limit = 5,
+            Filter = new TraceFilterExpression
+            {
+                Composite = new TraceFilterComposite
+                {
+                    Operator = TraceFilterComposite.Types.Operator.And,
+                    Expressions =
+                    {
+                        new TraceFilterExpression
+                        {
+                            Service = new ServiceFilter { Name = "duration-service" }
+                        },
+                        new TraceFilterExpression
+                        {
+                            Duration = new DurationFilter { MinNanos = 5_000_000 }
+                        }
+                    }
+                }
+            }
+        });
+
+        var longTrace = Assert.Single(minDurationResponse.Results);
+        Assert.Equal(traceIds[1], longTrace.Trace.TraceId);
+
+        // Maximum duration guard should favour the shortest span in the trace set.
+        var maxDurationResponse = await dataClient.SearchTracesAsync(new SearchTracesRequest
+        {
+            Limit = 5,
+            Filter = new TraceFilterExpression
+            {
+                Composite = new TraceFilterComposite
+                {
+                    Operator = TraceFilterComposite.Types.Operator.And,
+                    Expressions =
+                    {
+                        new TraceFilterExpression
+                        {
+                            Service = new ServiceFilter { Name = "duration-service" }
+                        },
+                        new TraceFilterExpression
+                        {
+                            Duration = new DurationFilter { MaxNanos = 5_000_000 }
+                        }
+                    }
+                }
+            }
+        });
+
+        var shortTrace = Assert.Single(maxDurationResponse.Results);
+        Assert.Equal(traceIds[0], shortTrace.Trace.TraceId);
+    }
+
+    [Fact]
     public async Task SearchTraces_FiltersLogsByLogAttributes()
     {
         using var channel = _factory.CreateGrpcChannel();
