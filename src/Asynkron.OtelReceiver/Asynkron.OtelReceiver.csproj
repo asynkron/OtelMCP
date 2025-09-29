@@ -59,4 +59,9 @@
     </Protobuf>
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Remove="ProtoGenerated/**/*.cs" />
+    <None Include="ProtoGenerated/**/*.cs" />
+  </ItemGroup>
+
 </Project>

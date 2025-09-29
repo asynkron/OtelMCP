@@ -167,10 +167,34 @@ public class McpStreamingHttpTests
             SerializeCommand("1", "getSearchData", new { }),
             SerializeCommand("2", "searchTraces", new
             {
-                serviceName = "mcp-service",
-                tagName = "http.method",
-                tagValue = "POST",
-                limit = 5
+                limit = 5,
+                filter = new
+                {
+                    composite = new
+                    {
+                        @operator = "OPERATOR_AND",
+                        expressions = new object[]
+                        {
+                            new
+                            {
+                                service = new
+                                {
+                                    name = "mcp-service"
+                                }
+                            },
+                            new
+                            {
+                                attribute = new
+                                {
+                                    key = "http.method",
+                                    value = "POST",
+                                    @operator = "ATTRIBUTE_FILTER_OPERATOR_EQUALS",
+                                    target = "ATTRIBUTE_FILTER_TARGET_SPAN"
+                                }
+                            }
+                        }
+                    }
+                }
             }),
             SerializeCommand("3", "setComponentMetadata", new
             {

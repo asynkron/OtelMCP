@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Asynkron.OtelReceiver.Data.Providers;
@@ -252,14 +253,10 @@ public class ModelRepo(
 
         var spansQuery = context.Spans.AsQueryable();
 
-        if (!string.IsNullOrWhiteSpace(request.ServiceName))
+        var spanPredicate = BuildSpanPredicate(request.Filter);
+        if (spanPredicate is not null)
         {
-            spansQuery = spansQuery.Where(span => span.ServiceName == request.ServiceName);
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.SpanName))
-        {
-            spansQuery = spansQuery.Where(span => span.OperationName == request.SpanName);
+            spansQuery = spansQuery.Where(spanPredicate);
         }
 
         if (request.StartTime != 0)
@@ -306,6 +303,8 @@ public class ModelRepo(
         var response = new SearchTracesResponse();
         var selectedTraceIds = new List<string>();
 
+        var logSearch = request.LogFilter?.BodyContains;
+
         foreach (var traceId in traceOrder)
         {
             var traceSpans = spans
@@ -318,22 +317,16 @@ public class ModelRepo(
                 continue;
             }
 
-            var (matchesFilter, attributeClause) = EvaluateTagFilter(traceSpans, request.TagName, request.TagValue);
-            if (!matchesFilter)
-            {
-                continue;
-            }
-
             selectedTraceIds.Add(traceId);
 
             var traceLogs = logs
                 .Where(log => log.TraceId == traceId)
                 .ToList();
 
-            if (!string.IsNullOrWhiteSpace(request.LogSearch))
+            if (!string.IsNullOrWhiteSpace(logSearch))
             {
                 traceLogs = traceLogs
-                    .Where(log => log.RawBody?.Contains(request.LogSearch, StringComparison.OrdinalIgnoreCase) ?? false)
+                    .Where(log => log.RawBody?.Contains(logSearch, StringComparison.OrdinalIgnoreCase) ?? false)
                     .ToList();
             }
 
@@ -358,30 +351,6 @@ public class ModelRepo(
                 Trace = overview
             };
 
-            if (attributeClause is not null)
-            {
-                traceResult.AttributeClauses.Add(attributeClause);
-            }
-
-            if (request.IncludeSpanProtos)
-            {
-                foreach (var span in traceSpans)
-                {
-                    // Persisted span blobs contain the original SpanWithService payload, so we
-                    // unpack it only when the caller explicitly requests the full span protos.
-                    if (span.Proto is not { Length: > 0 })
-                    {
-                        continue;
-                    }
-
-                    var spanWithService = SpanWithService.Parser.ParseFrom(span.Proto);
-                    if (spanWithService.Span is not null)
-                    {
-                        traceResult.Spans.Add(spanWithService.Span);
-                    }
-                }
-            }
-
             foreach (var log in traceLogs)
             {
                 traceResult.Logs.Add(LogRecord.Parser.ParseFrom(log.Proto));
@@ -397,8 +366,8 @@ public class ModelRepo(
 
         var logCounts = logs
             .Where(log => selectedTraceIds.Contains(log.TraceId))
-            .Where(log => string.IsNullOrWhiteSpace(request.LogSearch) ||
-                          (log.RawBody?.Contains(request.LogSearch, StringComparison.OrdinalIgnoreCase) ?? false))
+            .Where(log => string.IsNullOrWhiteSpace(logSearch) ||
+                          (log.RawBody?.Contains(logSearch, StringComparison.OrdinalIgnoreCase) ?? false))
             .GroupBy(log => log.RawBody ?? string.Empty)
             .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
 
@@ -616,89 +585,168 @@ public class ModelRepo(
         };
     }
 
-    private static (bool Matches, AttributeClauseMatch? Clause) EvaluateTagFilter(
-        IEnumerable<SpanEntity> spans,
-        string tagName,
-        string tagValue)
+    private static Expression<Func<SpanEntity, bool>>? BuildSpanPredicate(TraceFilterExpression? expression)
     {
-        if (string.IsNullOrWhiteSpace(tagName))
+        return expression?.ExpressionCase switch
         {
-            return (true, null);
-        }
-
-        var clause = new AttributeClauseMatch
-        {
-            Clause = string.IsNullOrWhiteSpace(tagValue)
-                ? $"tag:{tagName}"
-                : $"tag:{tagName}={tagValue}",
-            Satisfied = false
+            TraceFilterExpression.ExpressionOneofCase.Attribute => BuildAttributePredicate(expression.Attribute),
+            TraceFilterExpression.ExpressionOneofCase.Service => BuildServicePredicate(expression.Service),
+            TraceFilterExpression.ExpressionOneofCase.SpanName => BuildSpanNamePredicate(expression.SpanName),
+            TraceFilterExpression.ExpressionOneofCase.Composite => BuildCompositePredicate(expression.Composite),
+            _ => null
         };
-
-        foreach (var span in spans)
-        {
-            foreach (var match in EnumerateAttributeMatches(span, tagName, tagValue))
-            {
-                clause.Matches.Add(match);
-            }
-        }
-
-        clause.Satisfied = clause.Matches.Count > 0;
-        return clause.Satisfied ? (true, clause) : (false, clause);
     }
 
-    private static IEnumerable<AttributeMatch> EnumerateAttributeMatches(
-        SpanEntity span,
-        string tagName,
-        string tagValue)
+    private static Expression<Func<SpanEntity, bool>>? BuildCompositePredicate(TraceFilterComposite composite)
     {
-        if (string.IsNullOrWhiteSpace(tagName)) yield break;
-
-        foreach (var (key, value) in EnumerateSpanAttributes(span))
+        if (composite is null)
         {
-            if (!string.Equals(key, tagName, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (!string.IsNullOrWhiteSpace(tagValue) &&
-                !string.Equals(value, tagValue, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            yield return new AttributeMatch
-            {
-                SpanId = span.SpanId,
-                Key = key,
-                Value = value
-            };
+            return null;
         }
+
+        var childPredicates = composite.Expressions
+            .Select(BuildSpanPredicate)
+            .Where(predicate => predicate is not null)
+            .Cast<Expression<Func<SpanEntity, bool>>>()
+            .ToList();
+
+        if (childPredicates.Count == 0)
+        {
+            return null;
+        }
+
+        var @operator = composite.Operator == TraceFilterComposite.Types.Operator.Or
+            ? TraceFilterComposite.Types.Operator.Or
+            : TraceFilterComposite.Types.Operator.And;
+
+        return CombinePredicates(childPredicates, @operator);
     }
 
-    private static IEnumerable<(string Key, string Value)> EnumerateSpanAttributes(SpanEntity span)
+    private static Expression<Func<SpanEntity, bool>>? BuildAttributePredicate(AttributeFilter filter)
     {
-        if (span.AttributeMap is not { Length: > 0 })
+        if (filter is null || string.IsNullOrWhiteSpace(filter.Key))
         {
-            yield break;
+            return null;
         }
 
-        foreach (var attribute in span.AttributeMap)
+        if (filter.Target != AttributeFilterTarget.Unspecified &&
+            filter.Target != AttributeFilterTarget.Span)
         {
-            if (string.IsNullOrEmpty(attribute))
+            return null;
+        }
+
+        var parameter = Expression.Parameter(typeof(SpanEntity), "span");
+        var attributeMap = Expression.Property(parameter, nameof(SpanEntity.AttributeMap));
+        var notNull = Expression.NotEqual(attributeMap, Expression.Constant(null, typeof(string[])));
+
+        var operation = filter.Operator == AttributeFilterOperator.Unspecified
+            ? (string.IsNullOrEmpty(filter.Value)
+                ? AttributeFilterOperator.Exists
+                : AttributeFilterOperator.Equals)
+            : filter.Operator;
+
+        Expression body;
+
+        switch (operation)
+        {
+            case AttributeFilterOperator.Equals:
+            {
+                if (string.IsNullOrEmpty(filter.Value))
+                {
+                    return null;
+                }
+
+                var target = Expression.Constant($"{filter.Key}:{filter.Value}", typeof(string));
+                var containsMethod = typeof(Enumerable).GetMethods()
+                    .Single(m => m.Name == nameof(Enumerable.Contains) && m.GetParameters().Length == 2)
+                    .MakeGenericMethod(typeof(string));
+                var containsCall = Expression.Call(containsMethod, attributeMap, target);
+                body = Expression.AndAlso(notNull, containsCall);
+                break;
+            }
+            case AttributeFilterOperator.Exists:
+            {
+                var prefix = Expression.Constant($"{filter.Key}:", typeof(string));
+                var attributeParameter = Expression.Parameter(typeof(string), "attribute");
+                var startsWithMethod = typeof(string).GetMethod(nameof(string.StartsWith), new[] { typeof(string) })!;
+                var startsWithCall = Expression.Call(attributeParameter, startsWithMethod, prefix);
+                var lambda = Expression.Lambda<Func<string, bool>>(startsWithCall, attributeParameter);
+                var anyMethod = typeof(Enumerable).GetMethods()
+                    .Single(m => m.Name == nameof(Enumerable.Any) && m.GetParameters().Length == 2)
+                    .MakeGenericMethod(typeof(string));
+                var anyCall = Expression.Call(anyMethod, attributeMap, lambda);
+                body = Expression.AndAlso(notNull, anyCall);
+                break;
+            }
+            default:
+                return null;
+        }
+
+        return Expression.Lambda<Func<SpanEntity, bool>>(body, parameter);
+    }
+
+    private static Expression<Func<SpanEntity, bool>>? BuildServicePredicate(ServiceFilter filter)
+    {
+        if (filter is null || string.IsNullOrWhiteSpace(filter.Name))
+        {
+            return null;
+        }
+
+        return span => span.ServiceName == filter.Name;
+    }
+
+    private static Expression<Func<SpanEntity, bool>>? BuildSpanNamePredicate(SpanNameFilter filter)
+    {
+        if (filter is null || string.IsNullOrWhiteSpace(filter.Name))
+        {
+            return null;
+        }
+
+        return span => span.OperationName == filter.Name;
+    }
+
+    private static Expression<Func<SpanEntity, bool>>? CombinePredicates(
+        IReadOnlyList<Expression<Func<SpanEntity, bool>>> predicates,
+        TraceFilterComposite.Types.Operator @operator)
+    {
+        var parameter = Expression.Parameter(typeof(SpanEntity), "span");
+
+        Expression? body = null;
+
+        foreach (var predicate in predicates)
+        {
+            var visitor = new ReplaceParameterVisitor(predicate.Parameters[0], parameter);
+            var visited = visitor.Visit(predicate.Body);
+            if (visited is null)
             {
                 continue;
             }
 
-            var separatorIndex = attribute.IndexOf(':');
-            if (separatorIndex <= 0 || separatorIndex >= attribute.Length - 1)
-            {
-                continue;
-            }
-
-            var key = attribute[..separatorIndex];
-            var value = attribute[(separatorIndex + 1)..];
-            yield return (key, value);
+            body = body is null
+                ? visited
+                : @operator == TraceFilterComposite.Types.Operator.Or
+                    ? Expression.OrElse(body, visited)
+                    : Expression.AndAlso(body, visited);
         }
+
+        return body is null
+            ? null
+            : Expression.Lambda<Func<SpanEntity, bool>>(body, parameter);
+    }
+
+    private sealed class ReplaceParameterVisitor : ExpressionVisitor
+    {
+        private readonly ParameterExpression _source;
+        private readonly ParameterExpression _target;
+
+        public ReplaceParameterVisitor(ParameterExpression source, ParameterExpression target)
+        {
+            _source = source;
+            _target = target;
+        }
+
+        protected override Expression VisitParameter(ParameterExpression node)
+            => node == _source ? _target : base.VisitParameter(node);
     }
 
     private static bool SpanHasError(SpanEntity span)

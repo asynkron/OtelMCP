@@ -30,13 +30,65 @@ message GetValuesForTagResponse {
 }
 
 message SearchTracesRequest {
-  string service_name = 1;
-  string span_name = 2;
-  string tag_name = 3;
-  string tag_value = 4;
+  reserved 1, 2, 3, 4, 8;
+  reserved "service_name", "span_name", "tag_name", "tag_value", "log_search";
+
+  TraceFilterExpression filter = 9;
   uint64 start_time = 5;
   uint64 end_time = 6;
   int32 limit = 7;
+  LogFilter log_filter = 10;
+}
+
+message LogFilter {
+  string body_contains = 1;
+}
+
+message TraceFilterExpression {
+  oneof expression {
+    TraceFilterComposite composite = 1;
+    AttributeFilter attribute = 2;
+    ServiceFilter service = 3;
+    SpanNameFilter span_name = 4;
+  }
+}
+
+message TraceFilterComposite {
+  enum Operator {
+    OPERATOR_UNSPECIFIED = 0;
+    OPERATOR_AND = 1;
+    OPERATOR_OR = 2;
+  }
+
+  Operator operator = 1;
+  repeated TraceFilterExpression expressions = 2;
+}
+
+message AttributeFilter {
+  string key = 1;
+  string value = 2;
+  AttributeFilterOperator operator = 3;
+  AttributeFilterTarget target = 4;
+}
+
+enum AttributeFilterOperator {
+  ATTRIBUTE_FILTER_OPERATOR_UNSPECIFIED = 0;
+  ATTRIBUTE_FILTER_OPERATOR_EQUALS = 1;
+  ATTRIBUTE_FILTER_OPERATOR_EXISTS = 2;
+}
+
+enum AttributeFilterTarget {
+  ATTRIBUTE_FILTER_TARGET_UNSPECIFIED = 0;
+  ATTRIBUTE_FILTER_TARGET_SPAN = 1;
+  ATTRIBUTE_FILTER_TARGET_LOG = 2;
+}
+
+message ServiceFilter {
+  string name = 1;
+}
+
+message SpanNameFilter {
+  string name = 1;
   string log_search = 8;
   bool include_span_protos = 9;
 }
