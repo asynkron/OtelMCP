@@ -33,6 +33,8 @@ bld/
 [Oo]ut/
 [Ll]og/
 [Ll]ogs/
+!src/Asynkron.OtelReceiver/opentelemetry/proto/**/[Ll]ogs/
+!src/Asynkron.OtelReceiver/opentelemetry/proto/**/[Ll]ogs/context.md
 
 # Build results on 'Bin' directories
 **/[Bb]in/*
