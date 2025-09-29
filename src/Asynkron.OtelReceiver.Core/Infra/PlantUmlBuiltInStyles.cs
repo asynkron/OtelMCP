@@ -1,0 +1,49 @@
+namespace TraceLens.Generators.PlantUml;
+
+public static class PlantUmlBuiltInStyles
+{
+    public static readonly string[] Styles =
+    [
+        "_none_",
+        "amiga",
+        "aws-orange",
+        "black-knight",
+        "bluegray",
+        "blueprint",
+        "carbon-gray",
+        "cerulean",
+        "cerulean-outline",
+        "crt-amber",
+        "crt-green",
+        "cyborg",
+        "cyborg-outline",
+        "hacker",
+        "lightgray",
+        "mars",
+        "materia",
+        "materia-outline",
+        "metal",
+        "mimeograph",
+        "minty",
+        "plain",
+        "reddress-darkblue",
+        "reddress-darkgreen",
+        "reddress-darkorange",
+        "reddress-darkred",
+        "reddress-lightblue",
+        "reddress-lightgreen",
+        "reddress-lightorange",
+        "reddress-lightred",
+        "sandstone",
+        "silver",
+        "sketchy",
+        "sketchy-outline",
+        "spacelab",
+        "spacelab-white",
+        "superhero",
+        "superhero-outline",
+        "toy",
+        "united",
+        "vibrant"
+    ];
+}

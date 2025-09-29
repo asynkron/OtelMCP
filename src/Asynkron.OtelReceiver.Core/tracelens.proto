@@ -1,0 +1,205 @@
+syntax = "proto3";
+
+package tracelens.proto.v1;
+
+import "opentelemetry/proto/trace/v1/trace.proto";
+import "opentelemetry/proto/logs/v1/logs.proto";
+import "opentelemetry/proto/metrics/v1/metrics.proto";
+
+message SpanWithService {
+  opentelemetry.proto.trace.v1.Span span = 1;
+  string service_name = 2;
+}
+
+message CreateTraceSnapshotRequest {
+  string trace_id = 1;
+}
+
+message CreateTraceSnapshotResponse {
+  int32 snapshot_id = 1;
+}
+
+message GetSearchDataRequest {
+}
+
+message GetSearchDataResponse {
+  repeated string ServiceNames = 1;
+  repeated string SpanNames = 2;
+  repeated string TagNames = 3;
+
+}
+
+message GetUserSettingsRequest {
+
+}
+
+message GetUserSettingsResponse {
+  string Theme = 1;
+  TimestampType TimestampType=2;
+}
+
+enum TimestampType
+{
+  None = 0;
+  Absolute=1;
+  Relative=2;
+}
+
+message GetValuesForTagRequest {
+  string TagName = 1;
+}
+
+message GetValuesForTagResponse {
+  repeated string TagValues = 1;
+}
+
+message SearchTracesRequest {
+  string service_name = 1;
+  string span_name = 2;
+  string tag_name = 3;
+  string tag_value = 4;
+  uint64 start_time = 5;
+  uint64 end_time = 6;
+  int32 limit = 7;
+  string log_search = 8;
+}
+
+message SpanOverview {
+  string trace_id = 1;
+  string operation_name = 2;
+  string service_name = 3;
+}
+message TraceOverview {
+  string trace_id = 1;
+  string name = 3;
+  fixed64 start_time_unix_nano = 4;
+  fixed64 end_time_unix_nano = 5;
+  repeated SpanOverview spans = 6;
+  bool has_error = 7;
+}
+
+message SearchTraceResult {
+  TraceOverview trace = 1;
+  repeated opentelemetry.proto.logs.v1.LogRecord logs = 2;
+}
+
+message SearchTracesResponse {
+  repeated SearchTraceResult results = 1;
+  repeated LogCount log_counts = 2;
+  repeated SpanCount span_counts = 3;
+}
+
+message LogCount {
+  string raw_body = 1;
+  int32 count = 2;
+}
+
+message SpanCount {
+  string span_name = 1;
+  int32 count = 2;
+}
+
+message CreateServiceMapSnapshotRequest {
+  uint64 start_time = 5;
+  uint64 end_time = 6;
+}
+
+message CreateServiceMapSnapshotResponse {
+  int32 snapshot_id = 1;
+}
+
+message GetServiceMapComponentsRequest {
+  uint64 start_time = 5;
+  uint64 end_time = 6;
+}
+
+message GetServiceMapComponentsResponse {
+  message Component {
+    string id = 1;
+    string group_name = 2;
+    string component_name = 3;
+    string component_kind = 4;
+  }
+  repeated Component components = 1;
+}
+
+message GetComponentMetadataRequest {
+}
+
+message GetComponentMetadataResponse {
+  message ComponentMetadata {
+    string name_path = 1;
+    string annotations = 2;
+  }
+
+  repeated ComponentMetadata component_metadata = 1;
+}
+
+message SetComponentMetadataRequest {
+  string name_path = 1;
+  string annotations = 2;
+}
+
+message SetComponentMetadataResponse {
+}
+
+message GetMetadataForComponentRequest {
+  string component_id = 1;
+}
+
+message GetMetadataForComponentResponse {
+  string group_name = 1;
+  string component_name = 2;
+  string component_kind = 3;
+  string annotation = 4;
+}
+
+message Snapshot {
+  repeated SpanWithService spans = 1;
+  repeated opentelemetry.proto.logs.v1.LogRecord logs = 2;
+}
+
+message GetSnapshotRequest {
+  int32 snapshot_id = 1;
+}
+
+message GetSnapshotResponse {
+  repeated SpanWithService spans = 1;
+  repeated opentelemetry.proto.logs.v1.LogRecord logs = 2;
+}
+
+message GetMetricNamesRequest {
+}
+
+message GetMetricNamesResponse {
+  repeated string name = 1;
+}
+
+message GetMetricRequest {
+  string name = 1;
+  uint64 start_time = 2;
+  uint64 end_time = 3;
+}
+
+message GetMetricResponse {
+  repeated opentelemetry.proto.metrics.v1.Metric metrics = 1;
+}
+
+service DataService {
+  rpc GetSearchData(GetSearchDataRequest) returns (GetSearchDataResponse) {}
+  rpc GetUserSettings(GetUserSettingsRequest) returns (GetUserSettingsResponse) {}
+  rpc GetValuesForTag(GetValuesForTagRequest) returns (GetValuesForTagResponse) {}
+  rpc SearchTraces(SearchTracesRequest) returns (SearchTracesResponse) {}
+  
+  rpc CreateTraceSnapshot(CreateTraceSnapshotRequest) returns (CreateTraceSnapshotResponse) {}
+  rpc CreateServiceMapSnapshot(CreateServiceMapSnapshotRequest) returns (CreateServiceMapSnapshotResponse) {}
+  rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse) {}
+  
+  rpc GetComponentMetadata(GetComponentMetadataRequest) returns (GetComponentMetadataResponse) {}
+  rpc SetComponentMetadata(SetComponentMetadataRequest) returns (SetComponentMetadataResponse) {}
+  rpc GetMetadataForComponent(GetMetadataForComponentRequest) returns (GetMetadataForComponentResponse) {}
+  
+  rpc GetMetricNames(GetMetricNamesRequest) returns (GetMetricNamesResponse);
+  rpc GetMetric(GetMetricRequest) returns(GetMetricResponse);
+}
+
