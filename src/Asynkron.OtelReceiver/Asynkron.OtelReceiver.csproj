@@ -5,6 +5,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>preview</LangVersion>
+    <OutputType>Exe</OutputType>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>otelmcp</ToolCommandName>
+    <PackageId>dotnet-otelmcp</PackageId>
+    <IsPackable>true</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
@@ -66,6 +71,13 @@
   <ItemGroup>
     <Compile Remove="ProtoGenerated/**/*.cs" />
     <None Include="ProtoGenerated/**/*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Ensure runtime configuration files ship with the global tool package -->
+    <Content Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

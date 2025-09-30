@@ -1,6 +1,7 @@
 # `Asynkron.OtelReceiver` Project Context
 
-This ASP.NET Core gRPC service ingests OTLP telemetry and persists it using Entity Framework Core. Key entry points:
+This ASP.NET Core gRPC service ingests OTLP telemetry and persists it using Entity Framework Core. The project now also packs as
+the global tool `dotnet-otelmcp`, enabling the server to run via `dotnet otelmcp`. Key entry points:
 
 - [`Program.cs`](Program.cs) bootstraps the web host, wires up the SQLite-backed EF Core factory, registers ingestion services, and ensures migrations are applied at startup.
 - [`ReceiverMetricsConsole.cs`](ReceiverMetricsConsole.cs) provides a Spectre.Console CLI that connects to the running receiver (via `--metrics-client`) and streams live ingestion counters.
