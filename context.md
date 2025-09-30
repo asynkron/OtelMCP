@@ -6,14 +6,14 @@ This repository hosts the **Asynkron OTLP Receiver**, a .NET 8 solution for inge
 - [`Asynkron.OtelReceiver.sln`](Asynkron.OtelReceiver.sln) – entry point for building the receiver and associated tests.
 - [`src/context.md`](src/context.md) – code for the ASP.NET Core receiver, TraceLens utilities, database access, and generated OTLP protobuf definitions.
 - [`tests/context.md`](tests/context.md) – unit test projects that exercise the receiver infrastructure.
-- [`docker-compose.yml`](docker-compose.yml) – local Postgres + Jaeger environment used during development.
+- [`docker-compose.yml`](docker-compose.yml) – container recipe for the receiver with SQLite-backed storage.
 - [`docs/context.md`](docs/context.md) – repository guides and research notes, including integration walkthroughs.
 - [`samples/context.md`](samples/context.md) – vendored telemetry generators (e.g., the .NET Aspire Shop sample) for producing OTLP traffic during development.
 - [`AGENTS.md`](AGENTS.md) – workflow guidance for AI maintainers. Please read it together with this `context.md` and update both when altering repository conventions.
 
 ## Key capabilities
 - gRPC endpoints implementing OTLP trace, log, metric, and custom receiver-metrics services.
-- Entity Framework Core models and migrations backing PostgreSQL and SQLite storage.
+- Entity Framework Core models and migrations backing SQLite storage.
 - TraceLens domain model (component/group extraction, timeline calculations, metrics helpers) used to interpret OTLP payloads.
 - Generated OpenTelemetry protocol buffers that define the gRPC surface area consumed by the receiver.
 

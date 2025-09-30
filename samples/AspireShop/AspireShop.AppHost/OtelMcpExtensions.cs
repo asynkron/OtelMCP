@@ -34,9 +34,7 @@ internal static class OtelMcpExtensions
             // can discover it via the generated endpoint reference above.
             .WithEnvironment("ASPNETCORE_URLS", "http://0.0.0.0:4317")
             .WithEnvironment("ASPNETCORE_Kestrel__EndpointDefaults__Protocols", "Http2")
-            // Use the lightweight SQLite provider by default so the collector does not
-            // require any additional infrastructure when launched from the AppHost.
-            .WithEnvironment("DatabaseProvider", "Sqlite")
+            // Use SQLite by default so the collector does not require additional infrastructure.
             .WithEnvironment("ConnectionStrings__DefaultConnection", "Data Source=otelmcp.db");
 
         return otelCollector;

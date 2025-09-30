@@ -33,7 +33,7 @@ Because the exporters honor the standard OTLP environment variables, the sample 
 
 - .NET 8 SDK (already required for this repository).
 - Docker Desktop or a local Docker engine for the sample's Postgres and Redis containers.
-- Optional: `docker-compose` (ships with most Docker installs) if you plan to spin up the receiver's Postgres database instead of SQLite.
+- Optional: `docker-compose` (ships with most Docker installs) if you plan to run the receiver container separately.
 
 ## Step 1 – Launch the Aspire Shop sample with OtelMCP embedded
 
@@ -73,7 +73,6 @@ Prefer to operate the collector separately? Launch it with your desired settings
 ## Troubleshooting tips
 
 - **Connection refused** from the Aspire services usually means the embedded receiver failed to start. Check the AppHost logs for OtelMCP startup errors (for example, database file permissions).
-- If you prefer to keep the receiver on PostgreSQL, start `docker compose up db` before launching it so migrations can succeed.
 - To forward telemetry from containerized workloads, replace `localhost` in `OTEL_EXPORTER_OTLP_ENDPOINT` with the host's IP or use Docker networking aliases. You can set these environment variables before running the AppHost to bypass the embedded collector wiring.
 
 With this setup you gain a realistic telemetry stream—driven by a fully instrumented Aspire application—feeding directly into the MCP-enabled OTLP receiver for end-to-end testing.

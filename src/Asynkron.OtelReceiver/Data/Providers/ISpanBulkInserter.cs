@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Asynkron.OtelReceiver.Data;
 
 namespace Asynkron.OtelReceiver.Data.Providers;
 
@@ -10,5 +11,9 @@ namespace Asynkron.OtelReceiver.Data.Providers;
 /// </summary>
 public interface ISpanBulkInserter
 {
-    Task InsertAsync(OtelReceiverContext context, IReadOnlyCollection<SpanEntity> spans, CancellationToken cancellationToken = default);
+    Task InsertAsync(
+        OtelReceiverContext context,
+        IReadOnlyCollection<SpanEntity> spans,
+        IReadOnlyCollection<SpanAttributeValueEntity> attributes,
+        CancellationToken cancellationToken = default);
 }

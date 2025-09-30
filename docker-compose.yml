@@ -1,28 +1,16 @@
 version: '3.9'
 services:
-  postgres:
-    image: postgres:16
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: otel
-      POSTGRES_USER: otel
-      POSTGRES_PASSWORD: otel
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-
   otel-receiver:
     build:
       context: ./src
       dockerfile: Asynkron.OtelReceiver/Dockerfile
     environment:
       ASPNETCORE_URLS: http://+:4317
-      ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=otel;Username=otel;Password=otel
+      ConnectionStrings__DefaultConnection: Data Source=/data/otel.db
     ports:
       - "4317:4317"
-    depends_on:
-      - postgres
+    volumes:
+      - receiver-data:/data
 
 volumes:
-  pgdata:
+  receiver-data:

@@ -32,8 +32,7 @@ public class OtelReceiverApplicationFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        // Force the application under test to use the lightweight SQLite provider.
-        builder.UseSetting("DatabaseProvider", "Sqlite");
+        // Force the application under test to use a dedicated SQLite file per run.
         builder.UseSetting("ConnectionStrings:DefaultConnection", $"Data Source={_databasePath}");
     }
 

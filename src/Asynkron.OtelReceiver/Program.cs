@@ -17,27 +17,15 @@ if (args.Any(a => string.Equals(a, "--metrics-client", StringComparison.OrdinalI
 
 var builder = WebApplication.CreateBuilder(args);
 
-const string defaultProvider = "Postgres";
-var databaseProvider = builder.Configuration.GetValue<string>("DatabaseProvider") ?? defaultProvider;
+var sqliteConnectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+                             ?? "Data Source=otel.db";
 
-if (string.Equals(databaseProvider, "Sqlite", StringComparison.OrdinalIgnoreCase))
+builder.Services.AddDbContextFactory<OtelReceiverContext>(options =>
 {
-    builder.Services.AddDbContextFactory<OtelReceiverContext>(options =>
-    {
-        options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection"));
-    });
+    options.UseSqlite(sqliteConnectionString);
+});
 
-    builder.Services.AddScoped<ISpanBulkInserter, SqliteSpanBulkInserter>();
-}
-else
-{
-    builder.Services.AddDbContextFactory<OtelReceiverContext>(options =>
-    {
-        options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"));
-    });
-
-    builder.Services.AddScoped<ISpanBulkInserter, PostgresSpanBulkInserter>();
-}
+builder.Services.AddScoped<ISpanBulkInserter, SqliteSpanBulkInserter>();
 
 builder.Services.AddSingleton<IReceiverMetricsCollector, ReceiverMetricsCollector>();
 builder.Services.AddGrpc();

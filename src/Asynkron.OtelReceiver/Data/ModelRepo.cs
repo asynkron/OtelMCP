@@ -43,7 +43,8 @@ public class ModelRepo(
     {
         logger.LogInformation("Before save spans");
         var spanNames = new HashSet<SpanNameEntity>();
-        var attributes = new HashSet<SpanAttributeEntity>();
+        var attributeLookups = new HashSet<SpanAttributeEntity>();
+        var spanAttributeRows = new List<SpanAttributeValueEntity>();
         await using var context = await contextFactory.CreateDbContextAsync();
 
         var spans = new List<SpanEntity>();
@@ -69,12 +70,22 @@ public class ModelRepo(
             {
                 if (BlockedAttributes.Contains(a.Key)) continue;
 
+                var attributeValue = a.Value.ToStringValue();
+
+                spanAttributeRows.Add(new SpanAttributeValueEntity
+                {
+                    SpanId = span.SpanId,
+                    Key = a.Key,
+                    Value = attributeValue,
+                    Source = SpanAttributeSource.Span
+                });
+
                 var spanAttrib = new SpanAttributeEntity
                 {
                     Key = a.Key,
-                    Value = a.Value.ToStringValue()
+                    Value = attributeValue
                 };
-                if (SeenAttributes.Add(spanAttrib)) attributes.Add(spanAttrib);
+                if (SeenAttributes.Add(spanAttrib)) attributeLookups.Add(spanAttrib);
             }
 
             var spanName = new SpanNameEntity
@@ -88,7 +99,7 @@ public class ModelRepo(
 
         try
         {
-            await spanBulkInserter.InsertAsync(context, spans, CancellationToken.None);
+            await spanBulkInserter.InsertAsync(context, spans, spanAttributeRows, CancellationToken.None);
             logger.LogInformation("Before save changes");
             await context.SaveChangesAsync();
             logger.LogInformation("After save changes");
@@ -102,7 +113,7 @@ public class ModelRepo(
         logger.LogInformation("After save spans");
 
         logger.LogInformation("Before save attributes");
-        foreach (var attrib in attributes)
+        foreach (var attrib in attributeLookups)
             try
             {
                 //insert using raw sql instead
@@ -307,6 +318,17 @@ public class ModelRepo(
                 span.EndTimestamp - span.StartTimestamp <= maxDurationTicks);
         }
 
+        var requiredSpanFilters = new List<AttributeFilter>();
+        CollectRequiredSpanAttributeFilters(request.Filter, requiredSpanFilters, true);
+        if (requiredSpanFilters.Count > 0)
+        {
+            var spanAttributesQuery = context.SpanAttributeValues.AsNoTracking();
+            foreach (var filter in requiredSpanFilters)
+            {
+                spansQuery = ApplySpanAttributeFilter(spansQuery, spanAttributesQuery, filter);
+            }
+        }
+
         if (serviceNames.Count > 0 && spanNames.Count == 0)
         {
             spansQuery = spansQuery.Where(span => serviceNames.Contains(span.ServiceName));
@@ -354,6 +376,34 @@ public class ModelRepo(
             .AsNoTracking()
             .Where(span => candidateIds.Contains(span.TraceId))
             .ToListAsync();
+
+        IReadOnlyDictionary<string, IReadOnlyList<SpanAttributeValueEntity>>? spanAttributesBySpan = null;
+        if (spans.Count > 0)
+        {
+            var spanIds = spans
+                .Select(span => span.SpanId)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct()
+                .ToList();
+
+            if (spanIds.Count > 0)
+            {
+                var normalizedAttributes = await context.SpanAttributeValues
+                    .AsNoTracking()
+                    .Where(attribute => spanIds.Contains(attribute.SpanId))
+                    .ToListAsync();
+
+                if (normalizedAttributes.Count > 0)
+                {
+                    spanAttributesBySpan = normalizedAttributes
+                        .GroupBy(attribute => attribute.SpanId, StringComparer.Ordinal)
+                        .ToDictionary(
+                            group => group.Key,
+                            group => (IReadOnlyList<SpanAttributeValueEntity>)group.ToList(),
+                            StringComparer.Ordinal);
+                }
+            }
+        }
 
         var logSearch = request.LogFilter?.BodyContains;
         var normalizedLogSearch = string.IsNullOrWhiteSpace(logSearch)
@@ -412,7 +462,7 @@ public class ModelRepo(
                 : new List<LogEntity>();
 
             var clauseMap = new Dictionary<string, AttributeClauseMatch>(StringComparer.Ordinal);
-            var traceContext = new TraceContext(traceSpans, traceLogs);
+            var traceContext = new TraceContext(traceSpans, traceLogs, spanAttributesBySpan);
             if (!EvaluateTraceFilter(request.Filter, traceContext, clauseMap))
             {
                 continue;
@@ -832,6 +882,42 @@ public class ModelRepo(
         }
     }
 
+    private static void CollectRequiredSpanAttributeFilters(
+        TraceFilterExpression? expression,
+        ICollection<AttributeFilter> filters,
+        bool isRequired)
+    {
+        if (expression is null || (!isRequired && expression.ExpressionCase != TraceFilterExpression.ExpressionOneofCase.Composite))
+        {
+            return;
+        }
+
+        switch (expression.ExpressionCase)
+        {
+            case TraceFilterExpression.ExpressionOneofCase.Attribute when
+                isRequired &&
+                expression.Attribute is { } attribute &&
+                attribute.Target != AttributeFilterTarget.Log &&
+                !string.IsNullOrWhiteSpace(attribute.Key):
+                filters.Add(attribute);
+                break;
+            case TraceFilterExpression.ExpressionOneofCase.Composite:
+                var composite = expression.Composite;
+                if (composite is null || composite.Expressions.Count == 0)
+                {
+                    return;
+                }
+
+                var isOr = composite.Operator == TraceFilterComposite.Types.Operator.Or;
+                foreach (var child in composite.Expressions)
+                {
+                    CollectRequiredSpanAttributeFilters(child, filters, isRequired && !isOr);
+                }
+
+                break;
+        }
+    }
+
     private static IQueryable<LogEntity> ApplyLogAttributeFilter(
         IQueryable<LogEntity> query,
         AttributeFilter filter)
@@ -841,19 +927,56 @@ public class ModelRepo(
             return query;
         }
 
-        var operation = filter.Operator switch
-        {
-            AttributeFilterOperator.Equals => AttributeFilterOperator.Equals,
-            AttributeFilterOperator.Exists => AttributeFilterOperator.Exists,
-            _ => string.IsNullOrEmpty(filter.Value)
-                ? AttributeFilterOperator.Exists
-                : AttributeFilterOperator.Equals
-        };
+        var operation = NormalizeAttributeFilterOperator(filter);
 
         return operation == AttributeFilterOperator.Equals
             ? query.Where(log => log.Attributes.Any(attribute =>
                 attribute.Key == filter.Key && attribute.Value == filter.Value))
             : query.Where(log => log.Attributes.Any(attribute => attribute.Key == filter.Key));
+    }
+
+    private static IQueryable<SpanEntity> ApplySpanAttributeFilter(
+        IQueryable<SpanEntity> query,
+        IQueryable<SpanAttributeValueEntity> attributes,
+        AttributeFilter filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter.Key))
+        {
+            return query;
+        }
+
+        var operation = NormalizeAttributeFilterOperator(filter);
+        var key = filter.Key;
+        var value = filter.Value;
+
+        return operation == AttributeFilterOperator.Equals
+            ? query.Where(span => attributes.Any(attribute =>
+                attribute.SpanId == span.SpanId &&
+                attribute.Key == key &&
+                attribute.Value == value))
+            : query.Where(span => attributes.Any(attribute =>
+                attribute.SpanId == span.SpanId &&
+                attribute.Key == key));
+    }
+
+    private static AttributeFilterOperator NormalizeAttributeFilterOperator(AttributeFilter filter)
+    {
+        if (filter is null)
+        {
+            return AttributeFilterOperator.Unspecified;
+        }
+
+        return filter.Operator switch
+        {
+            AttributeFilterOperator.Equals => AttributeFilterOperator.Equals,
+            AttributeFilterOperator.Exists => AttributeFilterOperator.Exists,
+            AttributeFilterOperator.Unspecified => string.IsNullOrEmpty(filter.Value)
+                ? AttributeFilterOperator.Exists
+                : AttributeFilterOperator.Equals,
+            _ => string.IsNullOrEmpty(filter.Value)
+                ? AttributeFilterOperator.Exists
+                : AttributeFilterOperator.Equals
+        };
     }
 
     private static bool EvaluateTraceFilter(
@@ -999,15 +1122,7 @@ public class ModelRepo(
             ? AttributeFilterTarget.Log
             : AttributeFilterTarget.Span;
 
-        var operation = filter.Operator switch
-        {
-            AttributeFilterOperator.Equals => AttributeFilterOperator.Equals,
-            AttributeFilterOperator.Exists => AttributeFilterOperator.Exists,
-            AttributeFilterOperator.Unspecified => string.IsNullOrEmpty(filter.Value)
-                ? AttributeFilterOperator.Exists
-                : AttributeFilterOperator.Equals,
-            _ => AttributeFilterOperator.Equals
-        };
+        var operation = NormalizeAttributeFilterOperator(filter);
 
         if (operation == AttributeFilterOperator.Equals && string.IsNullOrEmpty(filter.Value))
         {
@@ -1027,7 +1142,7 @@ public class ModelRepo(
 
         var matches = target == AttributeFilterTarget.Log
             ? EvaluateLogAttributeMatches(traceContext.Logs, filter.Key!, filter.Value, operation)
-            : EvaluateSpanAttributeMatches(traceContext.Spans, filter.Key!, filter.Value, operation);
+            : EvaluateSpanAttributeMatches(traceContext, filter.Key!, filter.Value, operation);
 
         if (matches.Count > 0)
         {
@@ -1040,6 +1155,72 @@ public class ModelRepo(
     }
 
     private static List<AttributeMatch> EvaluateSpanAttributeMatches(
+        TraceContext traceContext,
+        string key,
+        string? value,
+        AttributeFilterOperator operation)
+    {
+        if (traceContext.SpanAttributes is null || traceContext.SpanAttributes.Count == 0)
+        {
+            return EvaluateSpanAttributeMatchesFromMap(traceContext.Spans, key, value, operation);
+        }
+
+        var matches = new List<AttributeMatch>();
+
+        foreach (var span in traceContext.Spans)
+        {
+            if (traceContext.SpanAttributes.TryGetValue(span.SpanId, out var attributes) && attributes.Count > 0)
+            {
+                if (operation == AttributeFilterOperator.Equals)
+                {
+                    foreach (var attribute in attributes)
+                    {
+                        if (!string.Equals(attribute.Key, key, StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
+                        if (!string.Equals(attribute.Value, value, StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
+                        matches.Add(new AttributeMatch
+                        {
+                            SpanId = span.SpanId,
+                            Key = key,
+                            Value = value ?? string.Empty
+                        });
+                    }
+                }
+                else
+                {
+                    foreach (var attribute in attributes)
+                    {
+                        if (!string.Equals(attribute.Key, key, StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
+                        matches.Add(new AttributeMatch
+                        {
+                            SpanId = span.SpanId,
+                            Key = key,
+                            Value = attribute.Value ?? string.Empty
+                        });
+                    }
+                }
+            }
+            else
+            {
+                matches.AddRange(EvaluateSpanAttributeMatchesFromMap(new[] { span }, key, value, operation));
+            }
+        }
+
+        return matches;
+    }
+
+    private static List<AttributeMatch> EvaluateSpanAttributeMatchesFromMap(
         IReadOnlyList<SpanEntity> spans,
         string key,
         string? value,
@@ -1188,7 +1369,8 @@ public class ModelRepo(
 
     private readonly record struct TraceContext(
         IReadOnlyList<SpanEntity> Spans,
-        IReadOnlyList<LogEntity> Logs);
+        IReadOnlyList<LogEntity> Logs,
+        IReadOnlyDictionary<string, IReadOnlyList<SpanAttributeValueEntity>>? SpanAttributes);
 
     private static bool SpanHasError(SpanEntity span)
     {
