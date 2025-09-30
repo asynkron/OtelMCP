@@ -31,12 +31,30 @@ public class SqliteSpanBulkInserterTests
             CreateSpanEntity()
         };
 
-        await inserter.InsertAsync(context, spans);
+        var attributes = new List<SpanAttributeValueEntity>
+        {
+            new()
+            {
+                SpanId = spans[0].SpanId,
+                Key = "env",
+                Value = "test",
+                Source = SpanAttributeSource.Span
+            },
+            new()
+            {
+                SpanId = spans[1].SpanId,
+                Key = "version",
+                Value = "1",
+                Source = SpanAttributeSource.Span
+            }
+        };
+
+        await inserter.InsertAsync(context, spans, attributes);
         await context.SaveChangesAsync();
 
         await using var verification = database.CreateContext();
-        var stored = await verification.Spans.CountAsync();
-        Assert.Equal(spans.Count, stored);
+        Assert.Equal(spans.Count, await verification.Spans.CountAsync());
+        Assert.Equal(attributes.Count, await verification.SpanAttributeValues.CountAsync());
     }
 
     [Fact]
@@ -73,6 +91,7 @@ public class SqliteSpanBulkInserterTests
         await using var verification = database.CreateContext();
         Assert.Equal(1, await verification.Spans.CountAsync());
         Assert.Equal(1, await verification.SpanAttributes.CountAsync());
+        Assert.Equal(1, await verification.SpanAttributeValues.CountAsync());
         Assert.Equal(1, await verification.SpanNames.CountAsync());
     }
 

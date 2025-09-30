@@ -16,6 +16,7 @@ public class OtelReceiverContext(DbContextOptions<OtelReceiverContext> options) 
     public DbSet<UserSettingsEntity> UserSettings { get; set; }
 
     public DbSet<SpanAttributeEntity> SpanAttributes { get; set; }
+    public DbSet<SpanAttributeValueEntity> SpanAttributeValues { get; set; }
     public DbSet<SpanNameEntity> SpanNames { get; set; }
 
     public DbSet<ComponentMetadataEntity> ComponentMetaData { get; set; }
@@ -69,6 +70,31 @@ public class LogAttributeEntity
 public enum LogAttributeSource : byte
 {
     Record = 0,
+    Resource = 1
+}
+
+[Index(nameof(SpanId))]
+[Index(nameof(Key))]
+[Index(nameof(Value))]
+[Index(nameof(Key), nameof(Value))]
+[Table("SpanAttributeValues")]
+public class SpanAttributeValueEntity
+{
+    [Key]
+    [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
+    public int Id { get; set; }
+
+    public string SpanId { get; set; }
+    public string Key { get; set; }
+    public string Value { get; set; }
+    public SpanAttributeSource Source { get; set; }
+
+    public SpanEntity Span { get; set; }
+}
+
+public enum SpanAttributeSource : byte
+{
+    Span = 0,
     Resource = 1
 }
 

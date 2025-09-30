@@ -2,7 +2,7 @@
 
 This ASP.NET Core gRPC service ingests OTLP telemetry and persists it using Entity Framework Core. Key entry points:
 
-- [`Program.cs`](Program.cs) bootstraps the web host, selects the configured database provider (PostgreSQL or SQLite), wires up EF Core factories, registers ingestion services, and ensures migrations are applied at startup.
+- [`Program.cs`](Program.cs) bootstraps the web host, wires up the SQLite-backed EF Core factory, registers ingestion services, and ensures migrations are applied at startup.
 - [`ReceiverMetricsConsole.cs`](ReceiverMetricsConsole.cs) provides a Spectre.Console CLI that connects to the running receiver (via `--metrics-client`) and streams live ingestion counters.
 - [`appsettings.json`](appsettings.json) holds default connection strings and provider selection.
 - Proto definitions (`tracelens.proto`, `receiver_metrics.proto`) generate gRPC contracts for TraceLens models and receiver metrics streaming. `tracelens.proto` now exposes a composable TraceLens search filter tree so clients can combine service, span, attribute, error, and duration predicates.

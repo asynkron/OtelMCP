@@ -236,6 +236,126 @@ public class DataServiceTests
     }
 
     [Fact]
+    public async Task SearchTraces_UsesNormalizedSpanAttributesForSqlFiltering()
+    {
+        using var channel = _factory.CreateGrpcChannel();
+        var traceClient = new TraceService.TraceServiceClient(channel);
+        var dataClient = new DataService.DataServiceClient(channel);
+
+        var traceSpecs = new[]
+        {
+            CreateSpec(4_000UL, "other-1"),
+            CreateSpec(3_000UL, "other-2"),
+            CreateSpec(2_000UL, "other-3"),
+            CreateSpec(1_000UL, "target")
+        };
+
+        foreach (var spec in traceSpecs)
+        {
+            var request = new ExportTraceServiceRequest
+            {
+                ResourceSpans =
+                {
+                    new ResourceSpans
+                    {
+                        Resource = new Resource
+                        {
+                            Attributes =
+                            {
+                                new KeyValue
+                                {
+                                    Key = "service.name",
+                                    Value = new AnyValue { StringValue = "sql-filter-service" }
+                                }
+                            }
+                        },
+                        ScopeSpans =
+                        {
+                            new ScopeSpans
+                            {
+                                Spans =
+                                {
+                                    new Span
+                                    {
+                                        TraceId = ByteString.CopyFrom(spec.TraceIdBytes),
+                                        SpanId = ByteString.CopyFrom(spec.SpanIdBytes),
+                                        Name = "sql-filter",
+                                        StartTimeUnixNano = spec.Start,
+                                        EndTimeUnixNano = spec.Start + 100,
+                                        Attributes =
+                                        {
+                                            new KeyValue
+                                            {
+                                                Key = "app.instance",
+                                                Value = new AnyValue { StringValue = spec.AttributeValue }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+
+            await traceClient.ExportAsync(request);
+        }
+
+        var targetSpec = traceSpecs[^1];
+
+        await WaitForAsync(async () => await _factory.ExecuteDbContextAsync(async context =>
+            {
+                var spanCount = await context.Spans.CountAsync();
+                var attributeCount = await context.SpanAttributeValues.CountAsync();
+                return spanCount >= traceSpecs.Length && attributeCount >= traceSpecs.Length;
+            }),
+            "spans and attributes to persist");
+
+        await _factory.ExecuteDbContextAsync(async context =>
+        {
+            var span = await context.Spans.SingleAsync(s => s.SpanId == targetSpec.SpanIdHex);
+            span.AttributeMap = Array.Empty<string>();
+            await context.SaveChangesAsync();
+        });
+
+        var response = await dataClient.SearchTracesAsync(new SearchTracesRequest
+        {
+            Limit = 1,
+            Filter = new TraceFilterExpression
+            {
+                Attribute = new AttributeFilter
+                {
+                    Key = "app.instance",
+                    Value = "target",
+                    Operator = AttributeFilterOperator.Equals,
+                    Target = AttributeFilterTarget.Span
+                }
+            }
+        });
+
+        var result = Assert.Single(response.Results);
+        Assert.Equal(targetSpec.TraceIdHex, result.Trace.TraceId);
+        var clause = Assert.Single(result.AttributeClauses);
+        Assert.True(clause.Satisfied);
+        Assert.Equal("tag:app.instance=target", clause.Clause);
+
+        static (byte[] TraceIdBytes, byte[] SpanIdBytes, string TraceIdHex, string SpanIdHex, ulong Start, string AttributeValue) CreateSpec(
+            ulong start,
+            string attributeValue)
+        {
+            var traceId = Guid.NewGuid().ToByteArray();
+            var spanId = Guid.NewGuid().ToByteArray();
+            return (
+                traceId,
+                spanId[..8],
+                Convert.ToHexString(traceId),
+                Convert.ToHexString(spanId[..8]),
+                start,
+                attributeValue);
+        }
+    }
+
+    [Fact]
     public async Task SearchTraces_SupportsCompositeAttributeFilters()
     {
         using var channel = _factory.CreateGrpcChannel();
