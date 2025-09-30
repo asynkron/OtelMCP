@@ -4,6 +4,8 @@ on:
   push:
     branches: [ main ]
   pull_request:
+  release:
+    types: [ published ]
 
 jobs:
   build:
@@ -25,3 +27,32 @@ jobs:
 
       - name: Test
         run: dotnet test Asynkron.OtelReceiver.sln --no-build --configuration Release
+
+  publish:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore Asynkron.OtelReceiver.sln
+
+      - name: Pack tool
+        run: dotnet pack src/Asynkron.OtelReceiver/Asynkron.OtelReceiver.csproj --no-restore --configuration Release --output ./artifacts
+
+      - name: Push package to NuGet
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "${NUGET_API_KEY}" ]; then
+            echo "NUGET_API_KEY secret is not set."
+            exit 1
+          fi
+          dotnet nuget push ./artifacts/*.nupkg --api-key "${NUGET_API_KEY}" --source https://api.nuget.org/v3/index.json --skip-duplicate
