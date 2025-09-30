@@ -65,15 +65,21 @@ public static class McpStreamingEndpoint
         context.Response.StatusCode = StatusCodes.Status200OK;
         context.Response.ContentType = "application/x-ndjson";
 
-        await WriteHandshakeAsync(context.Response, cancellationToken);
+        await WriteHandshakeAsync(context.Response, logger, cancellationToken);
 
         await foreach (var command in ReadCommandsAsync(context.Request.Body, cancellationToken))
         {
+            var payloadForLog = FormatPayloadForLog(command.Payload);
+            logger.LogInformation("Received MCP command {Command} (Id: {Id}) with payload: {Payload}", command.Command, command.Id, payloadForLog);
             McpResponse envelope;
             try
             {
                 var result = await ExecuteCommandAsync(command, repo);
                 envelope = McpResponse.ForResult(command.Id, command.Command, result);
+                var responsePayload = envelope.Result is JsonElement resultElement
+                    ? resultElement.GetRawText()
+                    : "{}";
+                logger.LogInformation("MCP command {Command} (Id: {Id}) succeeded with response: {Response}", command.Command, command.Id, responsePayload);
             }
             catch (Exception ex)
             {
@@ -82,6 +88,7 @@ public static class McpStreamingEndpoint
             }
 
             await WriteEnvelopeAsync(context.Response, envelope, cancellationToken);
+            logger.LogInformation("Sent MCP response for {Command} (Id: {Id})", command.Command, command.Id);
         }
     }
 
@@ -95,7 +102,7 @@ public static class McpStreamingEndpoint
         return await handler(repo, command.Payload);
     }
 
-    private static async Task WriteHandshakeAsync(HttpResponse response, CancellationToken cancellationToken)
+    private static async Task WriteHandshakeAsync(HttpResponse response, ILogger logger, CancellationToken cancellationToken)
     {
         var handshake = new McpHandshake
         {
@@ -111,6 +118,7 @@ public static class McpStreamingEndpoint
         await JsonSerializer.SerializeAsync(response.Body, handshake, SerializerOptions, cancellationToken);
         await response.WriteAsync("\n", cancellationToken);
         await response.Body.FlushAsync(cancellationToken);
+        logger.LogInformation("Sent MCP handshake advertising commands: {Commands}", string.Join(", ", handshake.Commands));
     }
 
     private static async Task WriteEnvelopeAsync(HttpResponse response, McpResponse envelope, CancellationToken cancellationToken)
@@ -154,6 +162,13 @@ public static class McpStreamingEndpoint
 
             yield return command;
         }
+    }
+
+    private static string FormatPayloadForLog(JsonElement payload)
+    {
+        return payload.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            ? "<empty>"
+            : payload.GetRawText();
     }
 
     private static T Parse<T>(JsonElement payload)
